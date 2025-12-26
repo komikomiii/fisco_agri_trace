@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
+from app.blockchain import blockchain_client
 
 router = APIRouter(prefix="/producer", tags=["原料商"])
 
@@ -232,12 +233,38 @@ async def submit_to_chain(
 
     # 生成溯源码
     product.trace_code = generate_trace_code()
-    product.status = ProductStatus.ON_CHAIN
 
-    # TODO: 实际调用区块链上链
-    # 这里先模拟上链结果
-    product.tx_hash = f"0x{uuid.uuid4().hex}"
-    product.block_number = 100 + product.id
+    # 准备上链数据
+    operator_name = current_user.real_name or current_user.username
+    chain_data = json.dumps({
+        "name": product.name,
+        "category": product.category,
+        "origin": product.origin,
+        "batch_no": product.batch_no,
+        "quantity": product.quantity,
+        "unit": product.unit,
+        "harvest_date": str(product.harvest_date) if product.harvest_date else None
+    }, ensure_ascii=False)
+
+    # 调用区块链上链
+    quantity_int = int((product.quantity or 0) * 1000)  # 转换为整数，支持3位小数
+    success, tx_hash, block_number = blockchain_client.create_product(
+        trace_code=product.trace_code,
+        name=product.name or "",
+        category=product.category or "",
+        origin=product.origin or "",
+        quantity=quantity_int,
+        unit=product.unit or "",
+        data=chain_data,
+        operator_name=operator_name
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="区块链上链失败，请稍后重试")
+
+    product.status = ProductStatus.ON_CHAIN
+    product.tx_hash = tx_hash
+    product.block_number = block_number
 
     # 创建上链记录
     record = ProductRecord(
@@ -249,9 +276,9 @@ async def submit_to_chain(
             "action": "submit_to_chain"
         }, ensure_ascii=False),
         operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
-        tx_hash=product.tx_hash,
-        block_number=product.block_number
+        operator_name=operator_name,
+        tx_hash=tx_hash,
+        block_number=block_number
     )
     db.add(record)
     db.commit()
@@ -338,24 +365,42 @@ async def amend_product(
         ProductRecord.product_id == product_id
     ).order_by(ProductRecord.id.desc()).first()
 
+    # 准备修正数据
+    operator_name = current_user.real_name or current_user.username
+    amend_chain_data = json.dumps({
+        "field": amend_data.field,
+        "old_value": amend_data.old_value,
+        "new_value": amend_data.new_value
+    }, ensure_ascii=False)
+
+    # 调用区块链添加修正记录
+    # Stage.PRODUCER = 0
+    success, tx_hash, block_number = blockchain_client.add_amend_record(
+        trace_code=product.trace_code,
+        stage=0,  # PRODUCER
+        data=amend_chain_data,
+        remark=amend_data.reason,
+        operator_name=operator_name,
+        previous_record_id=last_record.id if last_record else 0,
+        amend_reason=amend_data.reason
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="区块链修正记录提交失败，请稍后重试")
+
     # 创建修正记录
     record = ProductRecord(
         product_id=product.id,
         stage=ProductStage.PRODUCER,
         action=RecordAction.AMEND,
-        data=json.dumps({
-            "field": amend_data.field,
-            "old_value": amend_data.old_value,
-            "new_value": amend_data.new_value
-        }, ensure_ascii=False),
+        data=amend_chain_data,
         remark=amend_data.reason,
         operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
+        operator_name=operator_name,
         previous_record_id=last_record.id if last_record else None,
         amend_reason=amend_data.reason,
-        # TODO: 实际调用区块链
-        tx_hash=f"0x{uuid.uuid4().hex}",
-        block_number=100 + product.id
+        tx_hash=tx_hash,
+        block_number=block_number
     )
     db.add(record)
     db.commit()

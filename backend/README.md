@@ -238,43 +238,61 @@ bash nodes/127.0.0.1/stop_all.sh
 
 ---
 
-## Python SDK 连接区块链（待完善）
+## 区块链集成 (已完成)
 
-### 安装 Python SDK
+### 智能合约部署信息
+
+| 项目 | 值 |
+|------|------|
+| 合约名称 | AgriTrace |
+| 合约地址 | `0x6849f21d1e455e9f0712b1e99fa4fcd23758e8f1` |
+| 部署网络 | FISCO BCOS 3.0 (本地4节点) |
+| RPC 端口 | 20200 |
+| 群组 ID | group0 |
+
+### 区块链服务层
+
+位于 `app/blockchain/` 目录：
+
+```
+app/blockchain/
+├── __init__.py      # 模块导出
+├── config.py        # 区块链配置（RPC地址、合约地址等）
+└── client.py        # 区块链客户端（调用智能合约）
+```
+
+### 智能合约功能
+
+溯源智能合约已部署至链上，位于 `blockchain/contracts/AgriTrace.sol`，实现以下功能：
+
+| 功能 | 合约方法 | 描述 | 状态 |
+|------|----------|------|------|
+| 创建产品 | `createProduct()` | 原料商上链 | ✅ 已集成 |
+| 添加记录 | `addRecord()` | 添加流转记录 | ✅ 已集成 |
+| 修正记录 | `addAmendRecord()` | 提交修正记录 | ✅ 已集成 |
+| 产品转移 | `transferProduct()` | 转移到下一阶段 | 待集成 |
+| 质检通过 | `inspectPass()` | 质检员确认通过 | 待集成 |
+| 退回产品 | `rejectProduct()` | 质检不合格退回 | 待集成 |
+| 终止产品 | `terminateProduct()` | 终止产品链 | 待集成 |
+| 查询产品 | `getProduct()` | 获取产品信息 | ✅ 已集成 |
+| 验证溯源码 | `verifyTraceCode()` | 验证溯源码是否存在 | ✅ 已集成 |
+
+### 使用 Console 管理合约
 
 ```bash
-pip install python-fisco-bcos
+# 进入 Console
+cd /home/pdm/fisco/console
+./console.sh
+
+# 查询链上产品数量
+call AgriTrace 0x6849f21d1e455e9f0712b1e99fa4fcd23758e8f1 getProductCount
+
+# 验证溯源码
+call AgriTrace 0x6849f21d1e455e9f0712b1e99fa4fcd23758e8f1 verifyTraceCode "TRACE-20251226-XXXXXXXX"
+
+# 查询产品信息
+call AgriTrace 0x6849f21d1e455e9f0712b1e99fa4fcd23758e8f1 getProduct "TRACE-20251226-XXXXXXXX"
 ```
-
-### 配置 SDK
-
-创建 `app/blockchain/config.py`:
-
-```python
-FISCO_CONFIG = {
-    "rpc_url": "http://127.0.0.1:20200",
-    "chain_id": 1,
-    "group_id": "group0",
-}
-```
-
-### 智能合约
-
-溯源智能合约已完成开发，位于 `blockchain/contracts/AgriTrace.sol`，实现以下功能：
-
-| 功能 | 合约方法 | 描述 |
-|------|----------|------|
-| 创建产品 | `createProduct()` | 原料商上链 |
-| 添加记录 | `addRecord()` | 添加流转记录 |
-| 修正记录 | `addAmendRecord()` | 提交修正记录 |
-| 产品转移 | `transferProduct()` | 转移到下一阶段 |
-| 质检通过 | `inspectPass()` | 质检员确认通过 |
-| 退回产品 | `rejectProduct()` | 质检不合格退回 |
-| 终止产品 | `terminateProduct()` | 终止产品链 |
-| 查询产品 | `getProduct()` | 获取产品信息 |
-| 查询记录 | `getRecord()` | 获取流转记录 |
-
-> **待完成**: Python SDK 集成后可实现真实区块链交互
 
 ---
 
@@ -336,17 +354,13 @@ alembic init alembic
 - [x] 溯源智能合约 (Solidity)
 - [x] FISCO BCOS 区块链部署 (4节点)
 - [x] **原料商前后端联调**（前端已适配 API 数据格式）
-
-### 进行中
-
-- [ ] Python SDK 集成区块链
-- [ ] 真实区块链交互
+- [x] **真实区块链交互**（通过 Console 调用智能合约，数据真实上链）
 
 ### 待开发
 
-- [ ] 加工商 API
-- [ ] 质检员 API
-- [ ] 销售商 API
+- [ ] 加工商 API + 区块链集成
+- [ ] 质检员 API + 区块链集成
+- [ ] 销售商 API + 区块链集成
 - [ ] 消费者溯源 API
 - [ ] AI 简报生成
 
@@ -364,8 +378,8 @@ alembic init alembic
 | 编辑产品 | ✅ 完成 | 仅草稿状态可编辑 |
 | 删除产品 | ✅ 完成 | 仅草稿状态可删除 |
 | 产品列表 | ✅ 完成 | 支持状态过滤（草稿/已上链/全部）|
-| 上链提交 | ✅ 完成 | 生成唯一溯源码，模拟交易哈希 |
-| 修正记录 | ✅ 完成 | 已上链产品可追加修正记录 |
+| 上链提交 | ✅ 完成 | 生成唯一溯源码，**真实上链**到 FISCO BCOS |
+| 修正记录 | ✅ 完成 | 已上链产品可追加修正记录，**真实上链** |
 | 流转记录 | ✅ 完成 | 查看产品完整操作历史 |
 | 统计数据 | ✅ 完成 | 产品总数、各状态数量统计 |
 
