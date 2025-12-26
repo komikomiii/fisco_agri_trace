@@ -1,0 +1,207 @@
+/* 全局样式 - 农产品溯源平台 */
+:root {
+  /* 主题色 - 清新自然的绿色系 */
+  --primary-color: #2db84d;
+  --primary-light: #67d17e;
+  --primary-dark: #1a9938;
+
+  /* 辅助色 */
+  --secondary-color: #f8b500;
+  --accent-color: #ff6b35;
+
+  /* 角色色彩 */
+  --producer-color: #52c41a;    /* 原料商 - 翠绿 */
+  --processor-color: #1890ff;   /* 加工商 - 蓝色 */
+  --inspector-color: #722ed1;   /* 质检员 - 紫色 */
+  --seller-color: #fa8c16;      /* 销售商 - 橙色 */
+  --consumer-color: #eb2f96;    /* 消费者 - 粉色 */
+
+  /* 中性色 */
+  --bg-color: #f5f7fa;
+  --card-bg: #ffffff;
+  --text-primary: #303133;
+  --text-secondary: #606266;
+  --text-muted: #909399;
+  --border-color: #e4e7ed;
+
+  /* 阴影 */
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 20px;
+
+  /* 动画 */
+  --transition-fast: 0.2s ease;
+  --transition-normal: 0.3s ease;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+/* 自定义滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Element Plus 覆盖样式 */
+.el-button--primary {
+  --el-button-bg-color: var(--primary-color);
+  --el-button-border-color: var(--primary-color);
+  --el-button-hover-bg-color: var(--primary-light);
+  --el-button-hover-border-color: var(--primary-light);
+  --el-button-active-bg-color: var(--primary-dark);
+  --el-button-active-border-color: var(--primary-dark);
+}
+
+.el-button--success {
+  --el-button-bg-color: #52c41a;
+  --el-button-border-color: #52c41a;
+  --el-button-hover-bg-color: #73d13d;
+  --el-button-hover-border-color: #73d13d;
+  --el-button-active-bg-color: #389e0d;
+  --el-button-active-border-color: #389e0d;
+}
+
+/* Text 类型按钮颜色修复 */
+.el-button--primary.is-text {
+  --el-button-text-color: var(--primary-color);
+  --el-button-hover-text-color: var(--primary-dark);
+  --el-button-hover-bg-color: rgba(45, 184, 77, 0.1);
+}
+
+.el-button--success.is-text {
+  --el-button-text-color: #52c41a;
+  --el-button-hover-text-color: #389e0d;
+  --el-button-hover-bg-color: rgba(82, 196, 26, 0.1);
+}
+
+/* Link 类型按钮颜色修复 */
+.el-button--primary.is-link {
+  --el-button-text-color: var(--primary-color);
+  --el-button-hover-text-color: var(--primary-dark);
+}
+
+.el-button--success.is-link {
+  --el-button-text-color: #52c41a;
+  --el-button-hover-text-color: #389e0d;
+}
+
+/* 卡片样式增强 */
+.el-card {
+  border: none;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-normal);
+}
+
+.el-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+/* 输入框样式 */
+.el-input__wrapper {
+  border-radius: var(--radius-sm);
+}
+
+/* 页面过渡动画 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+/* 渐变背景 */
+.gradient-bg {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.gradient-green {
+  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+}
+
+/* 玻璃态效果 */
+.glass-effect {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* 动态背景装饰 */
+.bg-decoration {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.6;
+  z-index: -1;
+  animation: float 20s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-20px) rotate(180deg);
+  }
+}
+
+/* 统计卡片样式 */
+.stat-card {
+  padding: 24px;
+  border-radius: var(--radius-md);
+  color: white;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -50%;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 50%;
+}
+
+.stat-card.producer { background: linear-gradient(135deg, #52c41a, #73d13d); }
+.stat-card.processor { background: linear-gradient(135deg, #1890ff, #40a9ff); }
+.stat-card.inspector { background: linear-gradient(135deg, #722ed1, #9254de); }
+.stat-card.seller { background: linear-gradient(135deg, #fa8c16, #ffa940); }
+.stat-card.consumer { background: linear-gradient(135deg, #eb2f96, #f759ab); }
