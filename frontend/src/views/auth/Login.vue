@@ -3,6 +3,7 @@ import { ref, reactive, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../../store/user'
+import { authApi } from '../../api/auth'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -119,10 +120,15 @@ const handleRegister = async () => {
 
   loading.value = true
   try {
-    // 模拟注册请求
-    await new Promise(resolve => setTimeout(resolve, 1000))
+    // 调用真实注册 API
+    await authApi.register({
+      username: registerForm.username,
+      password: registerForm.password,
+      role: registerForm.role,
+      real_name: registerForm.realName,
+      phone: registerForm.phone || null
+    })
 
-    // 模拟注册成功
     ElMessage.success('注册成功，请登录')
 
     // 切换到登录模式，并填充用户名
@@ -130,7 +136,7 @@ const handleRegister = async () => {
     loginForm.username = registerForm.username
     loginForm.password = ''
   } catch (error) {
-    ElMessage.error(error.message || '注册失败')
+    ElMessage.error(error.response?.data?.detail || error.message || '注册失败')
   } finally {
     loading.value = false
   }

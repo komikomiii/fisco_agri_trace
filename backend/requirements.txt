@@ -1,0 +1,27 @@
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy==2.0.25
+pymysql==1.1.0
+alembic==1.13.1
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# FISCO BCOS SDK
+# eth-abi==4.2.1
+# eth-account==0.10.0
+# eth-utils==2.3.1
+
+# Utilities
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+httpx==0.26.0
+
+# CORS
+starlette==0.35.1

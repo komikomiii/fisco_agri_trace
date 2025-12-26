@@ -1,14 +1,22 @@
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProductStore } from '../../store/product'
 import { useUserStore } from '../../store/user'
+import { producerApi } from '../../api/producer'
 import ChainConfirm from '../../components/common/ChainConfirm.vue'
 import TraceCode from '../../components/common/TraceCode.vue'
 import AmendRecord from '../../components/common/AmendRecord.vue'
 
 const productStore = useProductStore()
 const userStore = useUserStore()
+
+// 是否使用真实 API
+const USE_REAL_API = true
+
+// 产品列表（从后端获取）
+const products = ref([])
+const loading = ref(false)
 
 // 搜索表单
 const searchForm = reactive({
@@ -30,8 +38,45 @@ const chainStatusMap = {
 // Tab 切换
 const activeTab = ref('draft')
 
+// 加载产品列表
+const fetchProducts = async () => {
+  if (!USE_REAL_API) return
+
+  loading.value = true
+  try {
+    const status = activeTab.value === 'all' ? null : activeTab.value
+    const data = await producerApi.getProducts(status)
+    products.value = data
+  } catch (error) {
+    ElMessage.error('获取产品列表失败')
+    console.error(error)
+  } finally {
+    loading.value = false
+  }
+}
+
+// 监听 Tab 切换时重新加载
+const handleTabChange = () => {
+  fetchProducts()
+}
+
 // 筛选后的产品列表
 const filteredProducts = computed(() => {
+  if (USE_REAL_API) {
+    let list = [...products.value]
+
+    // 应用搜索过滤
+    if (searchForm.name) {
+      list = list.filter(p => p.name.includes(searchForm.name))
+    }
+    if (searchForm.category) {
+      list = list.filter(p => p.category === searchForm.category)
+    }
+
+    return list
+  }
+
+  // 原有的本地 store 逻辑作为备用
   let list = []
   if (activeTab.value === 'draft') {
     list = productStore.draftChains
@@ -39,13 +84,11 @@ const filteredProducts = computed(() => {
     list = productStore.onChainProducts.filter(c => c.currentStage === 'producer')
   } else if (activeTab.value === 'all') {
     list = productStore.productChains.filter(c => {
-      // 只显示原料商阶段的产品
       const firstRecord = c.records[0]
       return firstRecord?.operator?.role === 'producer'
     })
   }
 
-  // 应用搜索过滤
   if (searchForm.name) {
     list = list.filter(c => c.productName.includes(searchForm.name))
   }
@@ -54,6 +97,11 @@ const filteredProducts = computed(() => {
   }
 
   return list
+})
+
+// 组件挂载时加载数据
+onMounted(() => {
+  fetchProducts()
 })
 
 // ==================== 新增/编辑产品 ====================
@@ -80,22 +128,38 @@ const processors = [
   { id: 6, name: '优品加工中心' }
 ]
 
-const openDialog = (chain = null) => {
-  if (chain) {
+const openDialog = (product = null) => {
+  if (product) {
     dialogTitle.value = '编辑产品'
     isEdit.value = true
-    editingChainId.value = chain.id
-    const data = productStore.getMergedData(chain)
-    Object.assign(productForm, {
-      name: data.name || chain.productName,
-      category: chain.category,
-      origin: data.origin || '',
-      plantDate: data.plantDate || '',
-      quantity: data.quantity || 0,
-      unit: data.unit || 'kg',
-      distributionType: chain.distribution?.type || 'pool',
-      assignedTo: chain.distribution?.assignedTo || null
-    })
+    editingChainId.value = product.id
+
+    // 适配两种数据格式（API 返回 和 本地 store）
+    const isApiFormat = !product.records
+    if (isApiFormat) {
+      Object.assign(productForm, {
+        name: product.name,
+        category: product.category,
+        origin: product.origin || '',
+        plantDate: product.plant_date || '',
+        quantity: product.quantity || 0,
+        unit: product.unit || 'kg',
+        distributionType: product.distribution_type || 'pool',
+        assignedTo: product.assigned_processor_id ? { id: product.assigned_processor_id } : null
+      })
+    } else {
+      const data = productStore.getMergedData(product)
+      Object.assign(productForm, {
+        name: data.name || product.productName,
+        category: product.category,
+        origin: data.origin || '',
+        plantDate: data.plantDate || '',
+        quantity: data.quantity || 0,
+        unit: data.unit || 'kg',
+        distributionType: product.distribution?.type || 'pool',
+        assignedTo: product.distribution?.assignedTo || null
+      })
+    }
   } else {
     dialogTitle.value = '新增产品'
     isEdit.value = false
@@ -114,17 +178,45 @@ const openDialog = (chain = null) => {
   dialogVisible.value = true
 }
 
-const handleSubmit = () => {
+const handleSubmit = async () => {
   if (!productForm.name || !productForm.category) {
     ElMessage.warning('请填写完整信息')
     return
   }
 
+  if (USE_REAL_API) {
+    try {
+      const data = {
+        name: productForm.name,
+        category: productForm.category,
+        origin: productForm.origin,
+        plant_date: productForm.plantDate,
+        quantity: productForm.quantity,
+        unit: productForm.unit,
+        distribution_type: productForm.distributionType,
+        assigned_processor_id: productForm.distributionType === 'assigned' ? productForm.assignedTo?.id : null
+      }
+
+      if (isEdit.value) {
+        await producerApi.updateProduct(editingChainId.value, data)
+        ElMessage.success('产品更新成功')
+      } else {
+        await producerApi.createProduct(data)
+        ElMessage.success('产品添加成功（草稿）')
+      }
+
+      dialogVisible.value = false
+      fetchProducts() // 刷新列表
+    } catch (error) {
+      ElMessage.error(error.response?.data?.detail || '操作失败')
+    }
+    return
+  }
+
+  // 原有本地逻辑作为备用
   if (isEdit.value) {
-    // 编辑模式 - 只能编辑草稿
     const chain = productStore.productChains.find(c => c.id === editingChainId.value)
     if (chain && chain.status === 'draft') {
-      // 更新草稿数据
       chain.productName = productForm.name
       chain.category = productForm.category
       chain.distribution = {
@@ -142,7 +234,6 @@ const handleSubmit = () => {
       ElMessage.success('产品更新成功')
     }
   } else {
-    // 新增产品（草稿）
     productStore.createProductChain({
       name: productForm.name,
       category: productForm.category,
@@ -163,22 +254,35 @@ const handleSubmit = () => {
   dialogVisible.value = false
 }
 
-const handleDelete = (chain) => {
-  if (chain.status !== 'draft') {
+const handleDelete = async (product) => {
+  if (product.status !== 'draft') {
     ElMessage.warning('只能删除草稿状态的产品')
     return
   }
-  ElMessageBox.confirm(`确定删除产品「${chain.productName}」吗？`, '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(() => {
-    const index = productStore.productChains.findIndex(c => c.id === chain.id)
-    if (index > -1) {
-      productStore.productChains.splice(index, 1)
+
+  try {
+    await ElMessageBox.confirm(`确定删除产品「${product.name || product.productName}」吗？`, '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+
+    if (USE_REAL_API) {
+      await producerApi.deleteProduct(product.id)
       ElMessage.success('删除成功')
+      fetchProducts()
+    } else {
+      const index = productStore.productChains.findIndex(c => c.id === product.id)
+      if (index > -1) {
+        productStore.productChains.splice(index, 1)
+        ElMessage.success('删除成功')
+      }
     }
-  })
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.detail || '删除失败')
+    }
+  }
 }
 
 // ==================== 上链确认 ====================
@@ -186,10 +290,13 @@ const chainConfirmVisible = ref(false)
 const pendingChainData = ref(null)
 const chainConfirmRef = ref(null)
 
-const handleConfirmOnChain = (chain) => {
-  const data = productStore.getMergedData(chain)
+const handleConfirmOnChain = (product) => {
+  // 适配两种数据格式（API 返回格式和本地 store 格式）
+  const isApiFormat = !product.records
+  const data = isApiFormat ? product : productStore.getMergedData(product)
+
   pendingChainData.value = {
-    chainId: chain.id,
+    chainId: product.id,
     labels: {
       name: '产品名称',
       category: '产品类别',
@@ -199,14 +306,17 @@ const handleConfirmOnChain = (chain) => {
       unit: '单位'
     },
     data: {
-      name: data.name,
-      category: chain.category,
-      origin: data.origin,
-      plantDate: data.plantDate,
-      quantity: `${data.quantity} ${data.unit}`,
-      unit: undefined // 已合并到 quantity 显示
+      name: isApiFormat ? product.name : data.name,
+      category: product.category,
+      origin: isApiFormat ? product.origin : data.origin,
+      plantDate: isApiFormat ? product.plant_date : data.plantDate,
+      quantity: `${isApiFormat ? product.quantity : data.quantity} ${isApiFormat ? product.unit : data.unit}`,
+      unit: undefined
     },
-    distribution: chain.distribution
+    distribution: isApiFormat ? {
+      type: product.distribution_type,
+      assignedTo: product.assigned_processor_id ? { id: product.assigned_processor_id } : null
+    } : product.distribution
   }
   chainConfirmVisible.value = true
 }
@@ -217,15 +327,22 @@ const onChainConfirm = async () => {
   chainConfirmRef.value?.setLoading()
 
   try {
-    const result = await productStore.confirmOnChain(pendingChainData.value.chainId)
-    if (result) {
-      chainConfirmRef.value?.setSuccess(result.records[0].txHash, result.records[0].blockNumber)
-      ElMessage.success('上链成功！溯源码：' + result.traceCode)
+    if (USE_REAL_API) {
+      const result = await producerApi.submitToChain(pendingChainData.value.chainId)
+      chainConfirmRef.value?.setSuccess(result.trace_code || 'TX-' + Date.now(), 1)
+      ElMessage.success('上链成功！溯源码：' + (result.trace_code || result.id))
+      fetchProducts()
     } else {
-      chainConfirmRef.value?.setError('上链失败，请重试')
+      const result = await productStore.confirmOnChain(pendingChainData.value.chainId)
+      if (result) {
+        chainConfirmRef.value?.setSuccess(result.records[0].txHash, result.records[0].blockNumber)
+        ElMessage.success('上链成功！溯源码：' + result.traceCode)
+      } else {
+        chainConfirmRef.value?.setError('上链失败，请重试')
+      }
     }
   } catch (error) {
-    chainConfirmRef.value?.setError(error.message || '上链失败')
+    chainConfirmRef.value?.setError(error.response?.data?.detail || error.message || '上链失败')
   }
 }
 
@@ -255,6 +372,43 @@ const openAmendDialog = (chain) => {
 const handleAmendSubmit = async (amendData) => {
   if (!amendingChain.value) return
 
+  if (USE_REAL_API) {
+    try {
+      // 从 amendData.changes 中获取修改的字段
+      const changedFields = Object.keys(amendData.changes)
+      if (changedFields.length === 0) {
+        ElMessage.warning('没有修改任何字段')
+        return
+      }
+
+      // 获取产品当前数据
+      const product = amendingChain.value
+      const isApiFormat = !product.records
+
+      // 提交每个修改的字段
+      for (const field of changedFields) {
+        const oldValue = isApiFormat
+          ? (product[field] || product[field.replace(/([A-Z])/g, '_$1').toLowerCase()])
+          : productStore.getMergedData(product)[field]
+
+        await producerApi.amendProduct(product.id, {
+          field: field,
+          old_value: String(oldValue || ''),
+          new_value: String(amendData.changes[field]),
+          reason: amendData.reason
+        })
+      }
+
+      ElMessage.success('修正记录已提交上链')
+      amendVisible.value = false
+      fetchProducts()
+    } catch (error) {
+      ElMessage.error(error.response?.data?.detail || '提交修正记录失败')
+    }
+    return
+  }
+
+  // 原有本地逻辑作为备用
   const originalRecord = amendingChain.value.records.find(r => r.action === 'create')
   if (!originalRecord) return
 
@@ -278,10 +432,55 @@ const handleAmendSubmit = async (amendData) => {
 // ==================== 查看详情 ====================
 const detailDrawerVisible = ref(false)
 const detailChain = ref(null)
+const detailRecords = ref([])
+const detailLoading = ref(false)
 
-const viewDetail = (chain) => {
-  detailChain.value = chain
+const viewDetail = async (product) => {
+  detailChain.value = product
   detailDrawerVisible.value = true
+
+  // 如果是 API 格式，需要加载记录
+  if (USE_REAL_API && !product.records) {
+    detailLoading.value = true
+    try {
+      const records = await producerApi.getProductRecords(product.id)
+      detailRecords.value = records
+    } catch (error) {
+      console.error('获取记录失败', error)
+      detailRecords.value = []
+    } finally {
+      detailLoading.value = false
+    }
+  } else {
+    detailRecords.value = product.records || []
+  }
+}
+
+// 获取详情数据（兼容两种数据格式）
+const getDetailData = (product) => {
+  if (!product) return {}
+
+  const isApiFormat = !product.records
+  if (isApiFormat) {
+    return {
+      name: product.name,
+      origin: product.origin,
+      quantity: product.quantity,
+      unit: product.unit,
+      plantDate: product.plant_date || product.harvest_date
+    }
+  }
+  return productStore.getMergedData(product)
+}
+
+// 获取产品名称（兼容两种格式）
+const getProductName = (product) => {
+  return product?.name || product?.productName || ''
+}
+
+// 获取溯源码（兼容两种格式）
+const getTraceCode = (product) => {
+  return product?.trace_code || product?.traceCode || ''
 }
 
 // 格式化时间
@@ -292,9 +491,11 @@ const formatTime = (timestamp) => {
 
 // 获取操作描述
 const getActionLabel = (action) => {
+  const actionLower = action?.toLowerCase() || ''
   const map = {
     create: '创建记录',
     amend: '修正信息',
+    harvest: '采收上链',
     receive: '接收原料',
     process: '加工处理',
     inspect: '质量检测',
@@ -302,7 +503,7 @@ const getActionLabel = (action) => {
     reject: '退回处理',
     terminate: '终止链条'
   }
-  return map[action] || action
+  return map[actionLower] || action
 }
 
 // 重置搜索
@@ -346,12 +547,12 @@ const resetSearch = () => {
       </template>
 
       <!-- Tab 切换 -->
-      <el-tabs v-model="activeTab" class="product-tabs">
+      <el-tabs v-model="activeTab" class="product-tabs" @tab-change="handleTabChange">
         <el-tab-pane label="草稿" name="draft">
           <template #label>
             <span>
               草稿
-              <el-badge :value="productStore.draftChains.length" :max="99" class="tab-badge" />
+              <el-badge :value="products.filter(p => p.status === 'draft').length" :max="99" class="tab-badge" />
             </span>
           </template>
         </el-tab-pane>
@@ -360,7 +561,7 @@ const resetSearch = () => {
             <span>
               已上链
               <el-badge
-                :value="productStore.onChainProducts.filter(c => c.currentStage === 'producer').length"
+                :value="products.filter(p => p.status === 'on_chain').length"
                 :max="99"
                 class="tab-badge"
                 type="success"
@@ -371,16 +572,18 @@ const resetSearch = () => {
         <el-tab-pane label="全部" name="all" />
       </el-tabs>
 
-      <el-table :data="filteredProducts" stripe style="width: 100%">
-        <el-table-column prop="productName" label="产品名称" min-width="140">
+      <el-table :data="filteredProducts" stripe style="width: 100%" v-loading="loading">
+        <el-table-column prop="name" label="产品名称" min-width="140">
           <template #default="{ row }">
             <div class="product-name">
               <el-avatar :size="36" shape="square" style="background: var(--primary-color)">
-                {{ row.productName.charAt(0) }}
+                {{ (row.name || row.productName || '?').charAt(0) }}
               </el-avatar>
               <div class="name-info">
-                <span class="name">{{ row.productName }}</span>
-                <span v-if="row.traceCode" class="trace-code">{{ row.traceCode }}</span>
+                <span class="name">{{ row.name || row.productName }}</span>
+                <span v-if="row.trace_code || row.traceCode" class="trace-code">
+                  {{ row.trace_code || row.traceCode }}
+                </span>
               </div>
             </div>
           </template>
@@ -392,27 +595,28 @@ const resetSearch = () => {
         </el-table-column>
         <el-table-column label="产地" min-width="120">
           <template #default="{ row }">
-            {{ productStore.getMergedData(row)?.origin || '-' }}
+            {{ row.origin || '-' }}
           </template>
         </el-table-column>
         <el-table-column label="数量" width="120">
           <template #default="{ row }">
-            {{ productStore.getMergedData(row)?.quantity || 0 }}
-            {{ productStore.getMergedData(row)?.unit || 'kg' }}
+            {{ row.quantity || 0 }} {{ row.unit || 'kg' }}
           </template>
         </el-table-column>
         <el-table-column label="分配方式" width="140">
           <template #default="{ row }">
-            <el-tag v-if="row.distribution?.type === 'pool'" type="info" effect="plain">
+            <el-tag v-if="(row.distribution_type || row.distribution?.type) === 'pool'" type="info" effect="plain">
               <el-icon><Collection /></el-icon>
               公共池
             </el-tag>
-            <el-tooltip v-else-if="row.distribution?.assignedTo" :content="row.distribution.assignedTo.name">
-              <el-tag type="warning" effect="plain">
-                <el-icon><Position /></el-icon>
-                指定发送
-              </el-tag>
-            </el-tooltip>
+            <el-tag v-else-if="row.distribution_type === 'assigned' || row.distribution?.assignedTo" type="warning" effect="plain">
+              <el-icon><Position /></el-icon>
+              指定发送
+            </el-tag>
+            <el-tag v-else type="info" effect="plain">
+              <el-icon><Collection /></el-icon>
+              公共池
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100">
@@ -559,7 +763,7 @@ const resetSearch = () => {
     <!-- 修正记录组件 -->
     <AmendRecord
       v-model:visible="amendVisible"
-      :original-data="amendingChain ? productStore.getMergedData(amendingChain) : {}"
+      :original-data="amendingChain ? getDetailData(amendingChain) : {}"
       :data-labels="amendDataLabels"
       :editable-fields="amendEditableFields"
       @submit="handleAmendSubmit"
@@ -573,8 +777,8 @@ const resetSearch = () => {
     >
       <template v-if="detailChain">
         <!-- 溯源码 -->
-        <div v-if="detailChain.traceCode" class="detail-section">
-          <TraceCode :trace-code="detailChain.traceCode" size="large" />
+        <div v-if="getTraceCode(detailChain)" class="detail-section">
+          <TraceCode :trace-code="getTraceCode(detailChain)" size="large" />
         </div>
 
         <!-- 基本信息 -->
@@ -582,17 +786,17 @@ const resetSearch = () => {
           <h4>基本信息</h4>
           <el-descriptions :column="1" border>
             <el-descriptions-item label="产品名称">
-              {{ detailChain.productName }}
+              {{ getProductName(detailChain) }}
             </el-descriptions-item>
             <el-descriptions-item label="产品类别">
               {{ detailChain.category }}
             </el-descriptions-item>
             <el-descriptions-item label="产地">
-              {{ productStore.getMergedData(detailChain)?.origin || '-' }}
+              {{ getDetailData(detailChain)?.origin || '-' }}
             </el-descriptions-item>
             <el-descriptions-item label="数量">
-              {{ productStore.getMergedData(detailChain)?.quantity }}
-              {{ productStore.getMergedData(detailChain)?.unit }}
+              {{ getDetailData(detailChain)?.quantity || 0 }}
+              {{ getDetailData(detailChain)?.unit || 'kg' }}
             </el-descriptions-item>
             <el-descriptions-item label="状态">
               <el-tag :type="chainStatusMap[detailChain.status]?.type">
@@ -606,28 +810,32 @@ const resetSearch = () => {
         <div class="detail-section">
           <h4>
             链上记录
-            <el-tag v-if="productStore.hasAmendments(detailChain)" type="warning" size="small">
+            <el-tag v-if="detailRecords.some(r => r.action === 'AMEND' || r.action === 'amend')" type="warning" size="small">
               有修正记录
             </el-tag>
           </h4>
-          <el-timeline>
+          <div v-if="detailLoading" class="loading-records">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            加载中...
+          </div>
+          <el-timeline v-else>
             <el-timeline-item
-              v-for="record in detailChain.records"
+              v-for="record in detailRecords"
               :key="record.id"
-              :timestamp="formatTime(record.timestamp)"
-              :type="record.action === 'amend' ? 'warning' : 'primary'"
+              :timestamp="formatTime(record.timestamp || record.created_at)"
+              :type="(record.action === 'AMEND' || record.action === 'amend') ? 'warning' : 'primary'"
             >
               <div class="record-item">
                 <div class="record-header">
                   <span class="action">{{ getActionLabel(record.action) }}</span>
-                  <span class="operator">{{ record.operator?.name }}</span>
+                  <span class="operator">{{ record.operator?.name || record.operator_name }}</span>
                 </div>
-                <div v-if="record.txHash" class="record-hash">
+                <div v-if="record.txHash || record.tx_hash" class="record-hash">
                   <el-icon><Link /></el-icon>
-                  {{ record.txHash.slice(0, 10) }}...{{ record.txHash.slice(-8) }}
+                  {{ (record.txHash || record.tx_hash).slice(0, 10) }}...{{ (record.txHash || record.tx_hash).slice(-8) }}
                 </div>
-                <div v-if="record.reason" class="record-reason">
-                  修正原因：{{ record.reason }}
+                <div v-if="record.reason || record.amend_reason" class="record-reason">
+                  修正原因：{{ record.reason || record.amend_reason }}
                 </div>
               </div>
             </el-timeline-item>
@@ -760,5 +968,14 @@ const resetSearch = () => {
   border-radius: 6px;
   font-size: 13px;
   color: #ad6800;
+}
+
+.loading-records {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-secondary);
 }
 </style>

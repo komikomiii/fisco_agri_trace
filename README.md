@@ -40,7 +40,7 @@ komi-project/
 │   │   │   └── common/    # 公共组件
 │   │   └── router/        # 路由配置
 │   └── package.json
-├── backend/               # Python 后端（待开发）
+├── backend/               # Python FastAPI 后端 ⭐ 已完成基础框架
 ├── blockchain/            # FISCO BCOS 智能合约
 ├── ai-service/            # Python AI 服务
 ├── docs/                  # 其他文档
@@ -115,6 +115,30 @@ npm run dev
 
 访问：http://localhost:3000
 
+### 后端运行
+
+> 详细文档请查看 👉 [backend/README.md](backend/README.md)
+
+```bash
+# 进入后端目录
+cd backend
+
+# 创建虚拟环境
+python3 -m venv venv
+source venv/bin/activate
+
+# 安装依赖
+pip install -i https://mirrors.aliyun.com/pypi/simple/ \
+    fastapi uvicorn sqlalchemy python-jose passlib bcrypt==4.0.1 python-multipart
+
+# 启动服务
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+访问：
+- API 文档：http://localhost:8000/docs
+- ReDoc：http://localhost:8000/redoc
+
 ### 测试账号
 
 | 用户名 | 密码 | 角色 |
@@ -148,12 +172,97 @@ npm run dev
 - [x] 销售商模块（入库、销售、二维码）
 - [x] 消费者模块（扫码、AI简报、溯源详情）
 - [x] 通知系统
-- [ ] Python 后端开发
-- [ ] 区块链集成（FISCO BCOS）
+- [x] Python 后端框架（FastAPI + SQLAlchemy + JWT）
+- [x] 用户认证 API（登录、注册）
+- [x] 原料商后端 API（产品 CRUD、上链接口）
+- [x] FISCO BCOS 区块链部署（4节点本地链）
+- [x] 溯源智能合约开发（Solidity）
+- [x] 原料商修正记录 API
+- [x] **原料商前后端联调完成**（产品管理、上链、修正记录、流转记录查询）
+- [ ] Python SDK 连接区块链
+- [ ] 其他角色后端 API（加工商、质检员、销售商、消费者）
 - [ ] AI 模块（OCR识别、简报生成）
 - [ ] 联调测试
 
 详细进度请查看 [开发计划.md](开发计划.md)
+
+---
+
+## 后端服务 (FastAPI)
+
+后端基于 FastAPI + SQLAlchemy + JWT 构建，提供完整的 RESTful API。
+
+### 技术栈
+
+| 组件 | 说明 |
+|------|------|
+| FastAPI | 高性能异步 Web 框架 |
+| SQLAlchemy | ORM 数据库操作 |
+| SQLite/MySQL | 数据存储（开发用 SQLite，生产用 MySQL）|
+| python-jose | JWT Token 认证 |
+| passlib + bcrypt | 密码加密 |
+
+### 已完成 API
+
+| 模块 | 接口 | 说明 |
+|------|------|------|
+| 认证 | POST `/api/auth/login` | 用户登录 |
+| 认证 | POST `/api/auth/register` | 用户注册 |
+| 认证 | GET `/api/auth/me` | 获取当前用户 |
+| 原料商 | GET `/api/producer/products` | 获取产品列表 |
+| 原料商 | POST `/api/producer/products` | 创建产品（草稿）|
+| 原料商 | PUT `/api/producer/products/{id}` | 更新产品（仅草稿）|
+| 原料商 | DELETE `/api/producer/products/{id}` | 删除产品（仅草稿）|
+| 原料商 | POST `/api/producer/products/{id}/submit` | 提交上链 |
+| 原料商 | POST `/api/producer/products/{id}/amend` | 修正记录（仅已上链）|
+| 原料商 | GET `/api/producer/products/{id}/records` | 获取流转记录 |
+| 原料商 | GET `/api/producer/statistics` | 获取统计数据 |
+
+> 完整后端文档请查看 👉 **[backend/README.md](backend/README.md)**
+
+---
+
+## 区块链 (FISCO BCOS)
+
+已部署 FISCO BCOS 3.0 本地4节点联盟链。
+
+### 智能合约
+
+溯源智能合约：`blockchain/contracts/AgriTrace.sol`
+
+| 功能 | 方法 | 描述 |
+|------|------|------|
+| 创建产品 | `createProduct()` | 原料商上链 |
+| 添加记录 | `addRecord()` | 添加流转记录 |
+| 修正记录 | `addAmendRecord()` | 提交修正记录 |
+| 产品转移 | `transferProduct()` | 转移到下一阶段 |
+| 质检操作 | `inspectPass()` / `rejectProduct()` | 质检通过/退回 |
+| 终止产品 | `terminateProduct()` | 终止产品链 |
+| 查询 | `getProduct()` / `getRecord()` | 获取产品/记录 |
+
+### 节点信息
+
+| 节点 | P2P 端口 | RPC 端口 |
+|------|----------|----------|
+| node0 | 30300 | 20200 |
+| node1 | 30301 | 20201 |
+| node2 | 30302 | 20202 |
+| node3 | 30303 | 20203 |
+
+### 节点管理
+
+```bash
+# 启动所有节点
+bash ~/nodes/127.0.0.1/start_all.sh
+
+# 停止所有节点
+bash ~/nodes/127.0.0.1/stop_all.sh
+
+# 检查节点进程
+ps aux | grep fisco-bcos
+```
+
+> 详细区块链配置请查看 👉 **[backend/README.md#fisco-bcos-区块链配置](backend/README.md#fisco-bcos-区块链配置)**
 
 ---
 
@@ -181,6 +290,18 @@ kill -9 <PID>
 ### 3. Mock 模式说明
 
 前端默认开启 Mock 模式，使用 `store/product.js` 中的模拟数据，无需后端即可测试完整流程。
+
+### 4. 后端 bcrypt 版本错误
+
+```
+AttributeError: module 'bcrypt' has no attribute '__about__'
+```
+
+**解决方案**：安装兼容版本 `pip install bcrypt==4.0.1`
+
+### 5. 后端常见问题
+
+更多后端问题请查看 👉 **[backend/README.md#常见问题](backend/README.md#常见问题)**
 
 ---
 
