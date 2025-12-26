@@ -275,6 +275,118 @@ class FiscoBcosClient:
         except:
             return False
 
+    def get_transaction_by_hash(self, tx_hash: str) -> Optional[Dict]:
+        """
+        通过交易哈希获取交易详情（使用 Console）
+        """
+        command = f'getTransactionByHash {tx_hash}'
+        success, stdout, stderr = self._run_console_command(command)
+
+        if not success or not stdout:
+            return None
+
+        # 解析 Console 输出
+        result = {}
+        lines = stdout.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            if '=' in line and not line.startswith('JsonTransactionResponse'):
+                # 处理 key=value 格式
+                if line.endswith(','):
+                    line = line[:-1]
+                parts = line.split('=', 1)
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    value = parts[1].strip().strip("'")
+                    result[key] = value
+
+        return result if result else None
+
+    def get_block_by_number(self, block_number: int) -> Optional[Dict]:
+        """
+        通过区块号获取区块详情（使用 Console）
+        """
+        command = f'getBlockByNumber {block_number}'
+        success, stdout, stderr = self._run_console_command(command)
+
+        if not success or not stdout:
+            return None
+
+        # 解析关键字段
+        result = {
+            "number": block_number,
+            "transactions": []
+        }
+
+        lines = stdout.strip().split('\n')
+        for line in lines:
+            line = line.strip()
+            # 解析 hash
+            if line.startswith("hash='"):
+                result["hash"] = line.split("'")[1]
+            # 解析 timestamp
+            elif line.startswith("timestamp='"):
+                result["timestamp"] = line.split("'")[1]
+            # 解析 sealer
+            elif line.startswith("sealer='"):
+                result["sealer"] = line.split("'")[1]
+            # 解析 gasUsed
+            elif line.startswith("gasUsed='"):
+                result["gasUsed"] = line.split("'")[1]
+            # 统计交易数量
+            elif "JsonTransactionResponse{" in line:
+                result["transactions"].append({})
+
+        return result if result.get("hash") else None
+
+    def get_chain_info(self) -> Dict:
+        """
+        获取链的基本信息
+        """
+        block_number = self.get_block_number()
+        product_count = self.get_product_count()
+
+        return {
+            "block_number": block_number,
+            "product_count": product_count,
+            "rpc_url": self.rpc_url,
+            "contract_address": self.contract_address,
+            "connected": self.is_connected()
+        }
+
+    def get_product_records_from_chain(self, trace_code: str) -> Optional[list]:
+        """
+        从链上获取产品的所有记录
+        """
+        command = f'call AgriTrace {self.contract_address} getRecordCount "{trace_code}"'
+        success, stdout, stderr = self._run_console_command(command)
+
+        if not success:
+            return None
+
+        parsed = self._parse_console_output(stdout)
+        if not parsed["return_values"]:
+            return None
+
+        try:
+            count = int(parsed["return_values"].strip("()"))
+        except:
+            return None
+
+        records = []
+        for i in range(count):
+            command = f'call AgriTrace {self.contract_address} getRecord "{trace_code}" {i}'
+            success, stdout, stderr = self._run_console_command(command)
+            if success:
+                parsed = self._parse_console_output(stdout)
+                if parsed["return_values"]:
+                    records.append({
+                        "index": i,
+                        "raw": parsed["return_values"]
+                    })
+
+        return records
+
 
 # 单例实例
 blockchain_client = FiscoBcosClient()

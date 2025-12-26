@@ -1,5 +1,22 @@
 <script setup>
 import { ref, computed } from 'vue'
+import { ElMessage } from 'element-plus'
+
+// 复制到剪贴板
+const copyToClipboard = async (text, label) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(`${label}已复制`)
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
+
+// 格式化哈希显示（截断中间部分）
+const formatHash = (hash) => {
+  if (!hash || hash.length < 20) return hash
+  return `${hash.slice(0, 10)}...${hash.slice(-8)}`
+}
 
 const props = defineProps({
   visible: {
@@ -196,16 +213,43 @@ defineExpose({
       <div v-if="resultData" class="result-info">
         <div class="result-item" v-if="resultData.traceCode">
           <span class="result-label">溯源码</span>
-          <span class="result-value code">{{ resultData.traceCode }}</span>
+          <div class="result-value-wrapper">
+            <span class="result-value code">{{ resultData.traceCode }}</span>
+            <el-button
+              type="primary"
+              link
+              size="small"
+              @click="copyToClipboard(resultData.traceCode, '溯源码')"
+            >
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
         </div>
         <div class="result-item" v-if="resultData.txHash">
           <span class="result-label">交易哈希</span>
-          <span class="result-value hash">{{ resultData.txHash }}</span>
+          <div class="result-value-wrapper">
+            <el-tooltip :content="resultData.txHash" placement="top">
+              <span class="result-value hash">{{ formatHash(resultData.txHash) }}</span>
+            </el-tooltip>
+            <el-button
+              type="primary"
+              link
+              size="small"
+              @click="copyToClipboard(resultData.txHash, '交易哈希')"
+            >
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
         </div>
         <div class="result-item" v-if="resultData.blockNumber">
           <span class="result-label">区块高度</span>
           <span class="result-value">{{ resultData.blockNumber }}</span>
         </div>
+      </div>
+
+      <div class="chain-tip">
+        <el-icon><InfoFilled /></el-icon>
+        <span>FISCO BCOS 联盟链数据，可通过交易哈希在链上验证</span>
       </div>
     </div>
 
@@ -395,7 +439,7 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 0;
+  padding: 12px 0;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -406,6 +450,13 @@ defineExpose({
 .result-label {
   color: var(--text-muted);
   font-size: 13px;
+  flex-shrink: 0;
+}
+
+.result-value-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .result-value {
@@ -421,6 +472,21 @@ defineExpose({
 .result-value.hash {
   color: #667eea;
   font-family: monospace;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.result-value.hash:hover {
+  text-decoration: underline;
+}
+
+.chain-tip {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-muted);
   font-size: 12px;
 }
 </style>

@@ -7,6 +7,7 @@ import { producerApi } from '../../api/producer'
 import ChainConfirm from '../../components/common/ChainConfirm.vue'
 import TraceCode from '../../components/common/TraceCode.vue'
 import AmendRecord from '../../components/common/AmendRecord.vue'
+import ChainVerify from '../../components/common/ChainVerify.vue'
 
 const productStore = useProductStore()
 const userStore = useUserStore()
@@ -356,16 +357,39 @@ const amendingChain = ref(null)
 
 const amendDataLabels = {
   name: '产品名称',
+  category: '产品类别',
   origin: '产地',
-  plantDate: '种植日期',
-  quantity: '数量'
+  harvestDate: '采收日期',
+  quantity: '数量',
+  unit: '单位'
 }
 
 const amendEditableFields = [
   { key: 'name', type: 'input', placeholder: '请输入产品名称' },
+  {
+    key: 'category',
+    type: 'select',
+    options: [
+      { label: '蔬菜', value: '蔬菜' },
+      { label: '水果', value: '水果' },
+      { label: '粮食', value: '粮食' },
+      { label: '水产', value: '水产' },
+      { label: '畜禽', value: '畜禽' },
+      { label: '其他', value: '其他' }
+    ]
+  },
   { key: 'origin', type: 'input', placeholder: '请输入产地' },
-  { key: 'plantDate', type: 'date' },
-  { key: 'quantity', type: 'number' }
+  { key: 'harvestDate', type: 'date' },
+  { key: 'quantity', type: 'number' },
+  {
+    key: 'unit',
+    type: 'select',
+    options: [
+      { label: 'kg', value: 'kg' },
+      { label: '只', value: '只' },
+      { label: '箱', value: '箱' }
+    ]
+  }
 ]
 
 const openAmendDialog = (chain) => {
@@ -373,31 +397,39 @@ const openAmendDialog = (chain) => {
   amendVisible.value = true
 }
 
+// 前端字段名到后端字段名的映射
+const fieldNameMap = {
+  harvestDate: 'harvest_date',
+  batchNo: 'batch_no'
+}
+
 const handleAmendSubmit = async (amendData) => {
   if (!amendingChain.value) return
 
   if (USE_REAL_API) {
     try {
-      // 从 amendData.changes 中获取修改的字段
-      const changedFields = Object.keys(amendData.changes)
+      // 获取产品当前数据
+      const product = amendingChain.value
+      const currentData = getDetailData(product)
+
+      // 找出真正被修改的字段（比较原值和新值）
+      const changedFields = Object.keys(amendData.changes).filter(key => {
+        return amendData.changes[key] !== currentData[key]
+      })
+
       if (changedFields.length === 0) {
         ElMessage.warning('没有修改任何字段')
         return
       }
 
-      // 获取产品当前数据
-      const product = amendingChain.value
-      const isApiFormat = !product.records
-
       // 提交每个修改的字段
       for (const field of changedFields) {
-        const oldValue = isApiFormat
-          ? (product[field] || product[field.replace(/([A-Z])/g, '_$1').toLowerCase()])
-          : productStore.getMergedData(product)[field]
+        // 转换字段名为后端格式
+        const backendField = fieldNameMap[field] || field
 
         await producerApi.amendProduct(product.id, {
-          field: field,
-          old_value: String(oldValue || ''),
+          field: backendField,
+          old_value: String(currentData[field] || ''),
           new_value: String(amendData.changes[field]),
           reason: amendData.reason
         })
@@ -439,6 +471,21 @@ const detailChain = ref(null)
 const detailRecords = ref([])
 const detailLoading = ref(false)
 
+// ==================== 链上验证 ====================
+const chainVerifyVisible = ref(false)
+const verifyTxHash = ref('')
+const verifyTraceCode = ref('')
+const verifyBlockNumber = ref(null)
+
+const openChainVerify = (record) => {
+  verifyTxHash.value = record?.tx_hash || record?.txHash || ''
+  verifyTraceCode.value = detailChain.value?.trace_code || detailChain.value?.traceCode || ''
+  // 从记录或产品中获取区块高度
+  verifyBlockNumber.value = record?.block_number || record?.blockNumber ||
+                            detailChain.value?.block_number || detailChain.value?.blockNumber || null
+  chainVerifyVisible.value = true
+}
+
 const viewDetail = async (product) => {
   detailChain.value = product
   detailDrawerVisible.value = true
@@ -466,12 +513,20 @@ const getDetailData = (product) => {
 
   const isApiFormat = !product.records
   if (isApiFormat) {
+    // 处理日期格式 - API 返回的可能是 ISO 格式或 null
+    let harvestDate = product.harvest_date || ''
+    if (harvestDate && harvestDate.includes('T')) {
+      harvestDate = harvestDate.split('T')[0]  // 转换为 YYYY-MM-DD 格式
+    }
+
     return {
-      name: product.name,
-      origin: product.origin,
-      quantity: product.quantity,
-      unit: product.unit,
-      plantDate: product.plant_date || product.harvest_date
+      name: product.name || '',
+      origin: product.origin || '',
+      quantity: product.quantity || 0,
+      unit: product.unit || 'kg',
+      harvestDate: harvestDate,
+      category: product.category || '',
+      batch_no: product.batch_no || ''
     }
   }
   return productStore.getMergedData(product)
@@ -812,12 +867,24 @@ const resetSearch = () => {
 
         <!-- 链上记录 -->
         <div class="detail-section">
-          <h4>
-            链上记录
-            <el-tag v-if="detailRecords.some(r => r.action === 'AMEND' || r.action === 'amend')" type="warning" size="small">
-              有修正记录
-            </el-tag>
-          </h4>
+          <div class="section-header">
+            <h4>
+              链上记录
+              <el-tag v-if="detailRecords.some(r => r.action === 'AMEND' || r.action === 'amend')" type="warning" size="small">
+                有修正记录
+              </el-tag>
+            </h4>
+            <el-button
+              v-if="detailChain.status === 'on_chain' && detailRecords.length > 0"
+              type="primary"
+              link
+              size="small"
+              @click="openChainVerify(detailRecords[0])"
+            >
+              <el-icon><Connection /></el-icon>
+              查看链信息
+            </el-button>
+          </div>
           <div v-if="detailLoading" class="loading-records">
             <el-icon class="is-loading"><Loading /></el-icon>
             加载中...
@@ -834,9 +901,25 @@ const resetSearch = () => {
                   <span class="action">{{ getActionLabel(record.action) }}</span>
                   <span class="operator">{{ record.operator?.name || record.operator_name }}</span>
                 </div>
-                <div v-if="record.txHash || record.tx_hash" class="record-hash">
-                  <el-icon><Link /></el-icon>
-                  {{ (record.txHash || record.tx_hash).slice(0, 10) }}...{{ (record.txHash || record.tx_hash).slice(-8) }}
+                <div v-if="record.txHash || record.tx_hash" class="chain-info-box" @click="openChainVerify(record)">
+                  <div class="chain-badge">
+                    <el-icon><Connection /></el-icon>
+                    <span>FISCO BCOS</span>
+                  </div>
+                  <div class="chain-details">
+                    <div class="chain-row">
+                      <span class="chain-label">交易哈希</span>
+                      <span class="chain-value">{{ (record.txHash || record.tx_hash).slice(0, 10) }}...{{ (record.txHash || record.tx_hash).slice(-8) }}</span>
+                    </div>
+                    <div v-if="record.block_number || record.blockNumber" class="chain-row">
+                      <span class="chain-label">区块高度</span>
+                      <span class="chain-value">#{{ record.block_number || record.blockNumber }}</span>
+                    </div>
+                  </div>
+                  <div class="verify-btn">
+                    <el-icon><View /></el-icon>
+                    <span>验证</span>
+                  </div>
                 </div>
                 <div v-if="record.reason || record.amend_reason" class="record-reason">
                   修正原因：{{ record.reason || record.amend_reason }}
@@ -847,6 +930,14 @@ const resetSearch = () => {
         </div>
       </template>
     </el-drawer>
+
+    <!-- 链上数据验证组件 -->
+    <ChainVerify
+      v-model:visible="chainVerifyVisible"
+      :tx-hash="verifyTxHash"
+      :trace-code="verifyTraceCode"
+      :block-number="verifyBlockNumber"
+    />
   </div>
 </template>
 
@@ -927,6 +1018,17 @@ const resetSearch = () => {
   margin-bottom: 24px;
 }
 
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-header h4 {
+  margin-bottom: 0;
+}
+
 .detail-section h4 {
   font-size: 14px;
   color: var(--text-primary);
@@ -956,13 +1058,84 @@ const resetSearch = () => {
   font-size: 13px;
 }
 
-.record-hash {
-  font-size: 12px;
-  color: var(--text-muted);
-  font-family: monospace;
+/* 链上信息卡片 */
+.chain-info-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08));
+  border: 1px solid rgba(102, 126, 234, 0.2);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.chain-info-box:hover {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.15));
+  border-color: rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+}
+
+.chain-badge {
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 4px 10px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chain-badge .el-icon {
+  font-size: 12px;
+}
+
+.chain-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chain-label {
+  color: var(--text-muted);
+}
+
+.chain-value {
+  color: #667eea;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.verify-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.chain-info-box:hover .verify-btn {
+  background: #667eea;
+  color: white;
 }
 
 .record-reason {

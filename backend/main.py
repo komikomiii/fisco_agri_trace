@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.database import engine, Base, SessionLocal
-from app.api import auth, producer
+from app.api import auth, producer, blockchain
 from app.models.user import User, UserRole
 from passlib.context import CryptContext
 
@@ -74,7 +74,7 @@ app = FastAPI(
 # CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],  # Vue dev server
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"],  # Vue dev server
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,6 +83,7 @@ app.add_middleware(
 # Include Routers
 app.include_router(auth.router, prefix="/api")
 app.include_router(producer.router, prefix="/api")
+app.include_router(blockchain.router, prefix="/api")
 
 
 @app.get("/")
