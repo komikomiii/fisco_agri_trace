@@ -28,10 +28,13 @@ source venv/bin/activate
 ```bash
 # 使用阿里云镜像加速
 pip install -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com \
-    fastapi uvicorn sqlalchemy python-jose passlib bcrypt==4.0.1 python-multipart
+    fastapi uvicorn sqlalchemy python-jose passlib bcrypt==4.0.1 python-multipart pymysql requests
 ```
 
-> **注意**: bcrypt 版本必须为 4.0.1，与 passlib 1.7.4 兼容
+> **注意**:
+> - bcrypt 版本必须为 4.0.1，与 passlib 1.7.4 兼容
+> - pymysql 用于 MySQL 连接
+> - requests 用于区块链 RPC 调用
 
 ### 3. 启动服务
 
@@ -149,33 +152,38 @@ curl http://localhost:8000/api/producer/statistics \
 
 ## 数据库配置
 
-### SQLite（开发环境，默认）
+### MySQL（当前使用）
 
-无需额外配置，自动创建 `agri_trace.db` 文件。
+项目已配置使用 MySQL 数据库：
 
-### MySQL（生产环境）
+| 配置项 | 值 |
+|--------|-----|
+| 主机 | localhost |
+| 端口 | 3306 |
+| 用户名 | root |
+| 密码 | 123456 |
+| 数据库名 | agri_trace |
 
-1. 修改 `app/config.py`:
+数据库表会在首次启动时自动创建，测试用户也会自动初始化。
+
+### 切换到 SQLite（可选）
+
+如需使用 SQLite 进行开发，修改 `app/config.py`:
 
 ```python
-USE_SQLITE: bool = False  # 改为 False
-MYSQL_HOST: str = "localhost"
-MYSQL_PORT: int = 3306
-MYSQL_USER: str = "root"
-MYSQL_PASSWORD: str = "your_password"
-MYSQL_DATABASE: str = "agri_trace"
+USE_SQLITE: bool = True  # 改为 True
 ```
 
-2. 安装 MySQL 驱动:
+### MySQL 手动配置
+
+如需重新配置 MySQL：
 
 ```bash
+# 创建数据库
+mysql -u root -p123456 -e "CREATE DATABASE IF NOT EXISTS agri_trace CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# 安装 Python 驱动
 pip install pymysql
-```
-
-3. 创建数据库:
-
-```sql
-CREATE DATABASE agri_trace CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
 ---

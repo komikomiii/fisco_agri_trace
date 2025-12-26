@@ -28,6 +28,7 @@ const emit = defineEmits(['update:visible', 'confirm', 'cancel'])
 
 const status = ref('pending') // pending | loading | success | error
 const resultData = ref(null)
+const loadingTimeout = ref(null)
 
 const dialogVisible = computed({
   get: () => props.visible,
@@ -51,35 +52,76 @@ const displayData = computed(() => {
 
 const handleConfirm = async () => {
   status.value = 'loading'
+  // 设置超时保护（60秒）
+  loadingTimeout.value = setTimeout(() => {
+    if (status.value === 'loading') {
+      handleError({ message: '上链超时，请检查网络后重试' })
+    }
+  }, 60000)
   emit('confirm')
 }
 
 const handleCancel = () => {
+  clearTimeout(loadingTimeout.value)
   status.value = 'pending'
   emit('cancel')
   dialogVisible.value = false
 }
 
-const handleSuccess = (data) => {
-  status.value = 'success'
-  resultData.value = data
-}
-
-const handleError = (error) => {
-  status.value = 'error'
-  resultData.value = { error: error.message || '上链失败' }
-}
-
-const handleClose = () => {
+// 强制关闭（loading 状态也可以）
+const handleForceClose = () => {
+  clearTimeout(loadingTimeout.value)
   status.value = 'pending'
   resultData.value = null
   dialogVisible.value = false
 }
 
+const handleSuccess = (data) => {
+  clearTimeout(loadingTimeout.value)
+  status.value = 'success'
+  resultData.value = data
+}
+
+const handleError = (error) => {
+  clearTimeout(loadingTimeout.value)
+  status.value = 'error'
+  resultData.value = { error: error?.message || error || '上链失败' }
+}
+
+const handleClose = () => {
+  clearTimeout(loadingTimeout.value)
+  status.value = 'pending'
+  resultData.value = null
+  dialogVisible.value = false
+}
+
+// 设置 loading 状态（兼容旧调用方式）
+const setLoading = () => {
+  status.value = 'loading'
+}
+
+// 设置成功状态（兼容旧调用方式）
+const setSuccess = (traceCode, blockNumber, txHash) => {
+  clearTimeout(loadingTimeout.value)
+  status.value = 'success'
+  resultData.value = { traceCode, blockNumber, txHash }
+}
+
+// 设置错误状态（兼容旧调用方式）
+const setError = (errorMsg) => {
+  clearTimeout(loadingTimeout.value)
+  status.value = 'error'
+  resultData.value = { error: errorMsg || '上链失败' }
+}
+
 // 暴露方法给父组件
 defineExpose({
   handleSuccess,
-  handleError
+  handleError,
+  setLoading,
+  setSuccess,
+  setError,
+  handleForceClose
 })
 </script>
 
@@ -89,8 +131,8 @@ defineExpose({
     :title="title"
     width="520px"
     :close-on-click-modal="false"
-    :close-on-press-escape="status !== 'loading'"
-    :show-close="status !== 'loading'"
+    :close-on-press-escape="true"
+    :show-close="true"
     @close="handleClose"
   >
     <!-- 待确认状态 -->
@@ -183,6 +225,9 @@ defineExpose({
           <el-icon><Connection /></el-icon>
           确认上链
         </el-button>
+      </template>
+      <template v-else-if="status === 'loading'">
+        <el-button @click="handleForceClose">后台运行</el-button>
       </template>
       <template v-else-if="status === 'success' || status === 'error'">
         <el-button type="primary" @click="handleClose">完成</el-button>

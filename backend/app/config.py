@@ -12,13 +12,13 @@ class Settings:
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
 
-    # Database (使用 SQLite 开发, 生产环境改为 MySQL)
+    # Database (MySQL)
     DB_HOST: str = "localhost"
     DB_PORT: int = 3306
     DB_USER: str = "root"
-    DB_PASSWORD: str = "123123"
+    DB_PASSWORD: str = "123456"
     DB_NAME: str = "agri_trace"
-    USE_SQLITE: bool = True  # 开发模式使用 SQLite
+    USE_SQLITE: bool = False  # 使用 MySQL
 
     @property
     def DATABASE_URL(self) -> str:

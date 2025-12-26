@@ -329,8 +329,12 @@ const onChainConfirm = async () => {
   try {
     if (USE_REAL_API) {
       const result = await producerApi.submitToChain(pendingChainData.value.chainId)
-      chainConfirmRef.value?.setSuccess(result.trace_code || 'TX-' + Date.now(), 1)
-      ElMessage.success('上链成功！溯源码：' + (result.trace_code || result.id))
+      chainConfirmRef.value?.setSuccess(
+        result.trace_code,
+        result.block_number,
+        result.tx_hash
+      )
+      ElMessage.success('上链成功！溯源码：' + result.trace_code)
       fetchProducts()
     } else {
       const result = await productStore.confirmOnChain(pendingChainData.value.chainId)
