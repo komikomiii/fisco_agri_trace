@@ -9,10 +9,11 @@ import enum
 
 
 class ProductStatus(str, enum.Enum):
-    DRAFT = "draft"                    # 草稿
-    PENDING_CHAIN = "pending_chain"    # 待上链
-    ON_CHAIN = "on_chain"              # 已上链
-    TERMINATED = "terminated"          # 已终止
+    DRAFT = "DRAFT"                    # 草稿
+    PENDING_CHAIN = "PENDING_CHAIN"    # 待上链
+    ON_CHAIN = "ON_CHAIN"              # 已上链
+    TERMINATED = "TERMINATED"          # 已终止
+    INVALIDATED = "INVALIDATED"        # 已作废
 
 
 class ProductStage(str, enum.Enum):
@@ -58,6 +59,11 @@ class Product(Base):
     # 区块链信息
     tx_hash = Column(String(100))  # 创建交易哈希
     block_number = Column(Integer)  # 区块高度
+
+    # 作废信息
+    invalidated_at = Column(DateTime)  # 作废时间
+    invalidated_by = Column(Integer, ForeignKey("users.id"))  # 作废操作人
+    invalidated_reason = Column(Text)  # 作废原因
 
     # 关联
     creator_id = Column(Integer, ForeignKey("users.id"))

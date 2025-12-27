@@ -156,19 +156,17 @@ async def verify_trace_code(trace_code: str):
 @router.get("/product/{trace_code}/chain-data")
 async def get_product_chain_data(trace_code: str):
     """
-    获取产品的链上原始数据
+    获取产品的链上原始数据（使用RPC直接调用，正确解码UTF-8中文）
     """
     try:
-        # 验证是否存在
-        exists = blockchain_client.verify_trace_code(trace_code)
-        if not exists:
+        # 使用 RPC 获取产品信息（正确解码UTF-8）
+        product_info = blockchain_client.get_product_rpc(trace_code)
+
+        if not product_info:
             raise HTTPException(status_code=404, detail="溯源码不存在")
 
-        # 获取产品信息
-        product_info = blockchain_client.get_product(trace_code)
-
-        # 获取链上记录
-        records = blockchain_client.get_product_records_from_chain(trace_code)
+        # 使用 RPC 获取链上记录（正确解码UTF-8）
+        records = blockchain_client.get_product_records_rpc(trace_code)
 
         return {
             "trace_code": trace_code,
@@ -180,6 +178,8 @@ async def get_product_chain_data(trace_code: str):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"获取链上数据失败: {str(e)}")
 
 

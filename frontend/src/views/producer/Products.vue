@@ -23,7 +23,8 @@ const loading = ref(false)
 const statusCounts = reactive({
   draft: 0,
   on_chain: 0,
-  all: 0
+  all: 0,
+  invalidated: 0
 })
 
 // 搜索表单
@@ -58,8 +59,9 @@ const fetchProducts = async () => {
     products.value = data
 
     // 更新各状态数量
-    statusCounts.draft = data.filter(p => p.status === 'draft').length
-    statusCounts.on_chain = data.filter(p => p.status === 'on_chain').length
+    statusCounts.draft = data.filter(p => p.status === 'DRAFT').length
+    statusCounts.on_chain = data.filter(p => p.status === 'ON_CHAIN').length
+    statusCounts.invalidated = data.filter(p => p.status === 'INVALIDATED').length
     statusCounts.all = data.length
   } catch (error) {
     ElMessage.error('获取产品列表失败')
@@ -79,9 +81,19 @@ const filteredProducts = computed(() => {
   if (USE_REAL_API) {
     let list = [...products.value]
 
+    // Tab name 到状态值的映射
+    const statusMap = {
+      'draft': 'DRAFT',
+      'on_chain': 'ON_CHAIN',
+      'invalidated': 'INVALIDATED'
+    }
+
     // 根据当前 Tab 过滤状态
     if (activeTab.value !== 'all') {
-      list = list.filter(p => p.status === activeTab.value)
+      const targetStatus = statusMap[activeTab.value]
+      if (targetStatus) {
+        list = list.filter(p => p.status === targetStatus)
+      }
     }
 
     // 应用搜索过滤
@@ -97,9 +109,9 @@ const filteredProducts = computed(() => {
 
   // 原有的本地 store 逻辑作为备用
   let list = []
-  if (activeTab.value === 'draft') {
+  if (activeTab.value === 'DRAFT') {
     list = productStore.draftChains
-  } else if (activeTab.value === 'on_chain') {
+  } else if (activeTab.value === 'ON_CHAIN') {
     list = productStore.onChainProducts.filter(c => c.currentStage === 'producer')
   } else if (activeTab.value === 'all') {
     list = productStore.productChains.filter(c => {
@@ -235,7 +247,7 @@ const handleSubmit = async () => {
   // 原有本地逻辑作为备用
   if (isEdit.value) {
     const chain = productStore.productChains.find(c => c.id === editingChainId.value)
-    if (chain && chain.status === 'draft') {
+    if (chain && chain.status === 'DRAFT') {
       chain.productName = productForm.name
       chain.category = productForm.category
       chain.distribution = {
@@ -274,7 +286,7 @@ const handleSubmit = async () => {
 }
 
 const handleDelete = async (product) => {
-  if (product.status !== 'draft') {
+  if (product.status !== 'DRAFT') {
     ElMessage.warning('只能删除草稿状态的产品')
     return
   }
@@ -300,6 +312,67 @@ const handleDelete = async (product) => {
   } catch (error) {
     if (error !== 'cancel') {
       ElMessage.error(error.response?.data?.detail || '删除失败')
+    }
+  }
+}
+
+// ==================== 产品作废 ====================
+const handleInvalidate = async (product) => {
+  try {
+    const { value: reason } = await ElMessageBox.prompt(
+      `<div style="margin-bottom: 16px;">
+        <p style="color: #e6a23c; font-weight: bold; margin-bottom: 8px;">
+          <i class="el-icon-warning"></i> 重要提示
+        </p>
+        <ul style="color: #666; font-size: 13px; line-height: 1.8; padding-left: 20px;">
+          <li>该产品溯源码：<strong>${product.trace_code || product.traceCode}</strong></li>
+          <li>作废后，产品将从列表中移除，移至"已作废"列表</li>
+          <li><strong style="color: #f56c6c;">区块链上的数据无法删除</strong>，溯源码将永久失效</li>
+          <li>如果该产品涉及生产流转环节，整条链路将受影响</li>
+        </ul>
+      </div>
+      <p style="margin-top: 12px;">请输入作废原因：</p>`,
+      '作废产品',
+      {
+        confirmButtonText: '确认作废',
+        cancelButtonText: '取消',
+        inputPlaceholder: '例如：数据录入错误、产品质量问题等',
+        inputPattern: /.+/,
+        inputErrorMessage: '请输入作废原因',
+        dangerouslyUseHTMLString: true,
+        type: 'warning',
+        inputValidator: (value) => {
+          if (!value || value.trim().length === 0) {
+            return '作废原因不能为空'
+          }
+          if (value.trim().length < 5) {
+            return '作废原因至少需要5个字符'
+          }
+          return true
+        }
+      }
+    )
+
+    if (USE_REAL_API) {
+      const result = await producerApi.invalidateProduct(product.id, { reason: reason.trim() })
+
+      if (result.deleted) {
+        ElMessage.success('草稿已删除')
+      } else {
+        ElMessage.success(result.message || '产品已作废')
+      }
+
+      fetchProducts()
+    } else {
+      const index = productStore.productChains.findIndex(c => c.id === product.id)
+      if (index > -1) {
+        productStore.productChains[index].status = 'invalidated'
+        ElMessage.success('产品已作废（链上数据无法删除）')
+      }
+    }
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.detail || error.message || '作废失败')
     }
   }
 }
@@ -758,6 +831,20 @@ const resetSearch = () => {
             </span>
           </template>
         </el-tab-pane>
+        <el-tab-pane label="已作废" name="invalidated">
+          <template #label>
+            <span class="tab-label">
+              <el-icon><Delete /></el-icon>
+              已作废
+              <el-badge
+                :value="statusCounts.invalidated"
+                :max="99"
+                class="tab-badge"
+                type="info"
+              />
+            </span>
+          </template>
+        </el-tab-pane>
       </el-tabs>
 
       <el-table :data="filteredProducts" stripe style="width: 100%" v-loading="loading" :header-cell-style="{ background: '#f5f7fa', color: '#606266' }">
@@ -811,8 +898,8 @@ const resetSearch = () => {
           <template #default="{ row }">
             <span class="tag-content">
               <el-icon class="tag-icon" :class="chainStatusMap[row.status]?.type || 'info'">
-                <CircleCheckFilled v-if="row.status === 'on_chain'" />
-                <EditPen v-else-if="row.status === 'draft'" />
+                <CircleCheckFilled v-if="row.status === 'ON_CHAIN'" />
+                <EditPen v-else-if="row.status === 'DRAFT'" />
                 <Loading v-else-if="row.status === 'pending'" class="is-loading" />
                 <CircleCloseFilled v-else />
               </el-icon>
@@ -823,7 +910,7 @@ const resetSearch = () => {
         <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <!-- 草稿状态的操作 -->
-            <template v-if="row.status === 'draft'">
+            <template v-if="row.status === 'DRAFT'">
               <el-button type="primary" text size="small" @click="openDialog(row)">
                 编辑
               </el-button>
@@ -837,7 +924,7 @@ const resetSearch = () => {
             </template>
 
             <!-- 已上链状态的操作 -->
-            <template v-else-if="row.status === 'on_chain'">
+            <template v-else-if="row.status === 'ON_CHAIN'">
               <el-button type="primary" text size="small" @click="viewDetail(row)">
                 查看详情
               </el-button>
@@ -845,9 +932,13 @@ const resetSearch = () => {
                 <el-icon><Edit /></el-icon>
                 修正信息
               </el-button>
+              <el-button type="danger" text size="small" @click="handleInvalidate(row)">
+                <el-icon><Delete /></el-icon>
+                作废
+              </el-button>
             </template>
 
-            <!-- 已终止的只能查看 -->
+            <!-- 已终止/已作废的只能查看 -->
             <template v-else>
               <el-button type="primary" text size="small" @click="viewDetail(row)">
                 查看详情
@@ -1037,7 +1128,7 @@ const resetSearch = () => {
               </el-tag>
             </h4>
             <el-button
-              v-if="detailChain.status === 'on_chain' && detailRecords.length > 0"
+              v-if="detailChain.status === 'ON_CHAIN' && detailRecords.length > 0"
               type="primary"
               link
               size="small"
@@ -1112,6 +1203,7 @@ const resetSearch = () => {
       :tx-hash="verifyTxHash"
       :trace-code="verifyTraceCode"
       :block-number="verifyBlockNumber"
+      :product-data="detailChain"
     />
   </div>
 </template>

@@ -5,8 +5,10 @@ FISCO BCOS 区块链客户端
 import json
 import subprocess
 import os
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 import requests
+from eth_abi import encode, decode
+from eth_utils import function_signature_to_4byte_selector
 
 from app.blockchain.config import (
     RPC_URL, GROUP_ID, CONTRACT_ADDRESS, CONSOLE_PATH
@@ -218,6 +220,61 @@ class FiscoBcosClient:
 
         return False, None, None
 
+    def _call_contract_rpc(self, function_signature: str, input_types: List[str], input_values: List[Any], output_types: List[str]) -> Optional[List[Any]]:
+        """
+        通过 RPC 调用合约 (view 函数)
+
+        Args:
+            function_signature: 函数签名，如 "getProduct(string)"
+            input_types: 输入参数类型列表，如 ["string"]
+            input_values: 输入参数值列表，如 ["TRACE-xxx"]
+            output_types: 输出参数类型列表，如 ["string", "string", "uint256", ...]
+
+        Returns:
+            解码后的返回值列表，失败返回 None
+        """
+        try:
+            # 1. 计算函数选择器 (前4字节)
+            selector = function_signature_to_4byte_selector(function_signature)
+
+            # 2. 编码输入参数
+            if input_values:
+                encoded_params = encode(input_types, input_values)
+            else:
+                encoded_params = b''
+
+            # 3. 组合完整的 data: selector + encoded_params
+            data = "0x" + (selector + encoded_params).hex()
+
+            # 4. 调用 RPC 的 call 方法
+            params = [
+                self.group_id,
+                {
+                    "from": "0x0000000000000000000000000000000000000000",
+                    "to": self.contract_address,
+                    "data": data
+                }
+            ]
+
+            result = self._rpc_call("call", params)
+
+            if "result" in result and "output" in result["result"]:
+                output_hex = result["result"]["output"]
+
+                # 5. 解码返回值
+                if output_hex and output_hex != "0x":
+                    output_bytes = bytes.fromhex(output_hex[2:])  # 去掉 0x 前缀
+                    decoded_values = decode(output_types, output_bytes)
+                    return list(decoded_values)
+
+            return None
+
+        except Exception as e:
+            print(f"RPC call error: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def get_product(self, trace_code: str) -> Optional[Dict]:
         """查询产品信息"""
         command = f'call AgriTrace {self.contract_address} getProduct "{trace_code}"'
@@ -231,6 +288,50 @@ class FiscoBcosClient:
         parsed = self._parse_console_output(stdout)
         if parsed["return_values"]:
             return {"raw": parsed["return_values"]}
+
+        return None
+
+    def get_product_rpc(self, trace_code: str) -> Optional[Dict]:
+        """
+        通过 RPC 直接调用查询产品信息（正确解码 UTF-8 中文）
+
+        返回格式:
+        {
+            "name": "产品名称",
+            "category": "产品类别",
+            "origin": "产地",
+            "quantity": 3000,  # 整数，已乘以1000
+            "unit": "kg",
+            "currentStage": 0,
+            "status": 1,
+            "creator": "0x...",
+            "currentHolder": "0x...",
+            "createdAt": 1234567890,
+            "recordCountNum": 5
+        }
+        """
+        # getProduct(string) returns (string, string, string, uint256, string, uint8, uint8, address, address, uint256, uint256)
+        result = self._call_contract_rpc(
+            function_signature="getProduct(string)",
+            input_types=["string"],
+            input_values=[trace_code],
+            output_types=["string", "string", "string", "uint256", "string", "uint8", "uint8", "address", "address", "uint256", "uint256"]
+        )
+
+        if result and len(result) == 11:
+            return {
+                "name": result[0],
+                "category": result[1],
+                "origin": result[2],
+                "quantity": result[3],  # 整数
+                "unit": result[4],
+                "currentStage": result[5],
+                "status": result[6],
+                "creator": result[7],
+                "currentHolder": result[8],
+                "createdAt": result[9],
+                "recordCountNum": result[10]
+            }
 
         return None
 
@@ -384,6 +485,68 @@ class FiscoBcosClient:
                         "index": i,
                         "raw": parsed["return_values"]
                     })
+
+        return records
+
+    def get_product_records_rpc(self, trace_code: str) -> Optional[List[Dict]]:
+        """
+        通过 RPC 获取产品的所有记录（正确解码 UTF-8 中文）
+
+        返回格式:
+        [
+            {
+                "recordId": 1,
+                "stage": 0,
+                "action": 0,
+                "data": "数据",
+                "remark": "备注",
+                "operator": "0x...",
+                "operatorName": "操作人",
+                "timestamp": 1234567890,
+                "previousRecordId": 0,
+                "amendReason": ""
+            },
+            ...
+        ]
+        """
+        # 1. 获取记录数量
+        count_result = self._call_contract_rpc(
+            function_signature="getRecordCount(string)",
+            input_types=["string"],
+            input_values=[trace_code],
+            output_types=["uint256"]
+        )
+
+        if not count_result or count_result[0] == 0:
+            return []
+
+        count = count_result[0]
+
+        # 2. 逐个获取记录
+        records = []
+        for i in range(count):
+            # getRecord(string,uint256) returns (uint256, uint8, uint8, string, string, address, string, uint256, uint256, string)
+            record_result = self._call_contract_rpc(
+                function_signature="getRecord(string,uint256)",
+                input_types=["string", "uint256"],
+                input_values=[trace_code, i],
+                output_types=["uint256", "uint8", "uint8", "string", "string", "address", "string", "uint256", "uint256", "string"]
+            )
+
+            if record_result and len(record_result) == 10:
+                records.append({
+                    "index": i,
+                    "recordId": record_result[0],
+                    "stage": record_result[1],
+                    "action": record_result[2],
+                    "data": record_result[3],
+                    "remark": record_result[4],
+                    "operator": record_result[5],
+                    "operatorName": record_result[6],
+                    "timestamp": record_result[7],
+                    "previousRecordId": record_result[8],
+                    "amendReason": record_result[9]
+                })
 
         return records
 

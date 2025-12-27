@@ -48,6 +48,11 @@ class AmendRequest(BaseModel):
     reason: str  # 修正原因
 
 
+class InvalidateRequest(BaseModel):
+    """产品作废请求"""
+    reason: str  # 作废原因
+
+
 class ProductResponse(BaseModel):
     id: int
     trace_code: Optional[str]
@@ -104,13 +109,23 @@ def generate_trace_code() -> str:
 @router.get("/products", response_model=List[ProductResponse])
 async def list_products(
     status: Optional[ProductStatus] = None,
+    include_invalidated: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """获取原料列表"""
+    """
+    获取原料列表
+    - 默认不包含已作废产品
+    - 使用 include_invalidated=true 可包含已作废产品
+    """
     check_producer_role(current_user)
 
     query = db.query(Product).filter(Product.creator_id == current_user.id)
+
+    # 默认排除已作废产品
+    if not include_invalidated:
+        query = query.filter(Product.status != ProductStatus.INVALIDATED)
+
     if status:
         query = query.filter(Product.status == status)
 
@@ -337,6 +352,95 @@ async def delete_product(
     db.commit()
 
     return {"message": "删除成功"}
+
+
+@router.post("/products/{product_id}/invalidate")
+async def invalidate_product(
+    product_id: int,
+    invalidate_data: InvalidateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    作废产品
+    - 草稿状态: 直接删除
+    - 已上链状态: 标记为INVALIDATED，保留数据但不再显示在正常列表中
+    注意: 链上数据无法删除，作废后溯源码永久失效
+    """
+    check_producer_role(current_user)
+
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.creator_id == current_user.id
+    ).first()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="原料不存在")
+
+    if product.status == ProductStatus.INVALIDATED:
+        raise HTTPException(status_code=400, detail="产品已作废")
+
+    # 草稿状态直接删除
+    if product.status == ProductStatus.DRAFT:
+        db.query(ProductRecord).filter(ProductRecord.product_id == product_id).delete()
+        db.delete(product)
+        db.commit()
+        return {
+            "message": "草稿已删除",
+            "deleted": True
+        }
+
+    # 已上链状态标记为作废
+    product.status = ProductStatus.INVALIDATED
+    product.invalidated_at = datetime.now()
+    product.invalidated_by = current_user.id
+    product.invalidated_reason = invalidate_data.reason
+
+    # 添加作废记录
+    record = ProductRecord(
+        product_id=product.id,
+        stage=product.current_stage,
+        action=RecordAction.TERMINATE,
+        data=json.dumps({
+            "action": "invalidate",
+            "reason": invalidate_data.reason
+        }, ensure_ascii=False),
+        remark=f"产品作废: {invalidate_data.reason}",
+        operator_id=current_user.id,
+        operator_name=current_user.real_name or current_user.username
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(product)
+
+    return {
+        "message": "产品已作废（链上数据无法删除，溯源码已失效）",
+        "deleted": False,
+        "invalidated": True,
+        "product": {
+            "id": product.id,
+            "trace_code": product.trace_code,
+            "name": product.name,
+            "invalidated_at": product.invalidated_at,
+            "invalidated_reason": product.invalidated_reason
+        }
+    }
+
+
+@router.get("/products/invalidated", response_model=List[ProductResponse])
+async def get_invalidated_products(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """获取已作废产品列表"""
+    check_producer_role(current_user)
+
+    products = db.query(Product).filter(
+        Product.creator_id == current_user.id,
+        Product.status == ProductStatus.INVALIDATED
+    ).order_by(Product.invalidated_at.desc()).all()
+
+    return products
 
 
 @router.post("/products/{product_id}/amend", response_model=RecordResponse)

@@ -30,6 +30,16 @@ export const producerApi = {
     return api.delete(`/producer/products/${id}`)
   },
 
+  // 作废产品
+  invalidateProduct(id, data) {
+    return api.post(`/producer/products/${id}/invalidate`, data)
+  },
+
+  // 获取已作废产品列表
+  getInvalidatedProducts() {
+    return api.get('/producer/products/invalidated')
+  },
+
   // 提交上链
   submitToChain(id) {
     return api.post(`/producer/products/${id}/submit`)

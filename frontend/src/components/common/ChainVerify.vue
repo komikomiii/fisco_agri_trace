@@ -19,6 +19,10 @@ const props = defineProps({
   blockNumber: {
     type: Number,
     default: null
+  },
+  productData: {
+    type: Object,
+    default: null
   }
 })
 
@@ -136,59 +140,55 @@ const verifyOnChain = async () => {
   }
 }
 
-// 解析链上产品数据
-const parseProductInfo = (raw) => {
-  if (!raw) return null
+// 解析链上产品数据（RPC直接返回结构化数据）
+const parseProductInfo = (productInfo) => {
+  if (!productInfo) return null
 
-  // 链上返回格式可能是: (name, category, origin, quantity, unit, operator, timestamp)
-  // 需要根据实际合约返回格式解析
   try {
-    const rawStr = typeof raw === 'string' ? raw : raw.raw || ''
-
-    // 尝试解析元组格式: (value1, value2, ...)
-    const match = rawStr.match(/\(([^)]+)\)/)
-    if (match) {
-      const values = match[1].split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''))
+    // RPC返回的是结构化数据，直接使用
+    if (typeof productInfo === 'object' && productInfo.name !== undefined) {
       return {
-        name: values[0] || '',
-        category: values[1] || '',
-        origin: values[2] || '',
-        quantity: values[3] || '',
-        unit: values[4] || '',
-        operator: values[5] || '',
-        timestamp: values[6] || ''
+        name: productInfo.name || '',
+        category: productInfo.category || '',
+        origin: productInfo.origin || '',
+        quantity: (productInfo.quantity / 1000).toString(), // 转换为小数
+        unit: productInfo.unit || '',
+        currentStage: productInfo.currentStage,
+        status: productInfo.status,
+        creator: productInfo.creator,
+        createdAt: productInfo.createdAt
       }
     }
 
     return null
-  } catch {
+  } catch (e) {
+    console.error('解析产品信息失败:', e)
     return null
   }
 }
 
-// 解析链上记录
+// 解析链上记录（RPC直接返回结构化数据）
 const parseChainRecord = (record) => {
-  if (!record || !record.raw) return null
+  if (!record) return null
 
   try {
-    const rawStr = record.raw
-    // 格式: (stage, action, data, remark, operator, timestamp, previousRecordId, amendReason)
-    const match = rawStr.match(/\(([^)]+)\)/)
-    if (match) {
-      const values = match[1].split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''))
+    // RPC返回的是结构化数据，直接使用
+    if (typeof record === 'object' && record.stage !== undefined) {
       return {
         index: record.index,
-        stage: values[0] || '',
-        action: values[1] || '',
-        data: values[2] || '',
-        remark: values[3] || '',
-        operator: values[4] || '',
-        timestamp: values[5] || '',
-        amendReason: values[7] || ''
+        stage: record.stage,
+        action: record.action,
+        data: record.data || '',
+        remark: record.remark || '',
+        operator: record.operatorName || record.operator || '',
+        timestamp: record.timestamp,
+        amendReason: record.amendReason || ''
       }
     }
+
     return null
-  } catch {
+  } catch (e) {
+    console.error('解析记录失败:', e)
     return null
   }
 }
@@ -231,6 +231,12 @@ const handleTabChange = (tab) => {
     verifyOnChain()
   }
 }
+
+// 原始JSON数据
+const rawJson = computed(() => {
+  if (!verifyResult.value) return ''
+  return JSON.stringify(verifyResult.value, null, 2)
+})
 
 // 打开时加载数据
 watch(dialogVisible, (val) => {
@@ -514,7 +520,7 @@ watch(dialogVisible, (val) => {
                       </div>
                     </template>
                     <template v-else>
-                      <pre class="raw-data-small">{{ record.raw }}</pre>
+                      <pre class="raw-data-small">{{ JSON.stringify(record, null, 2) }}</pre>
                     </template>
                   </div>
                 </div>
@@ -525,7 +531,7 @@ watch(dialogVisible, (val) => {
           <!-- 原始数据展开 -->
           <el-collapse class="raw-data-collapse">
             <el-collapse-item title="查看原始链上数据" name="raw">
-              <pre class="raw-json">{{ JSON.stringify(verifyResult, null, 2) }}</pre>
+              <pre class="raw-json">{{ rawJson }}</pre>
             </el-collapse-item>
           </el-collapse>
         </div>
