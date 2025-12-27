@@ -113,20 +113,110 @@ const loadChainInfo = async () => {
   }
 }
 
-// 验证溯源码
+// 验证溯源码并获取链上详细数据
 const verifyOnChain = async () => {
   if (!props.traceCode) return
 
   loading.value = true
   try {
-    const data = await blockchainApi.verifyTraceCode(props.traceCode)
+    // 获取链上完整产品数据
+    const data = await blockchainApi.getProductChainData(props.traceCode)
     verifyResult.value = data
   } catch (error) {
     console.error('验证失败', error)
-    verifyResult.value = null
+    // 如果获取详细数据失败，尝试只验证是否存在
+    try {
+      const simpleData = await blockchainApi.verifyTraceCode(props.traceCode)
+      verifyResult.value = simpleData
+    } catch {
+      verifyResult.value = null
+    }
   } finally {
     loading.value = false
   }
+}
+
+// 解析链上产品数据
+const parseProductInfo = (raw) => {
+  if (!raw) return null
+
+  // 链上返回格式可能是: (name, category, origin, quantity, unit, operator, timestamp)
+  // 需要根据实际合约返回格式解析
+  try {
+    const rawStr = typeof raw === 'string' ? raw : raw.raw || ''
+
+    // 尝试解析元组格式: (value1, value2, ...)
+    const match = rawStr.match(/\(([^)]+)\)/)
+    if (match) {
+      const values = match[1].split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''))
+      return {
+        name: values[0] || '',
+        category: values[1] || '',
+        origin: values[2] || '',
+        quantity: values[3] || '',
+        unit: values[4] || '',
+        operator: values[5] || '',
+        timestamp: values[6] || ''
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+// 解析链上记录
+const parseChainRecord = (record) => {
+  if (!record || !record.raw) return null
+
+  try {
+    const rawStr = record.raw
+    // 格式: (stage, action, data, remark, operator, timestamp, previousRecordId, amendReason)
+    const match = rawStr.match(/\(([^)]+)\)/)
+    if (match) {
+      const values = match[1].split(',').map(v => v.trim().replace(/^['"]|['"]$/g, ''))
+      return {
+        index: record.index,
+        stage: values[0] || '',
+        action: values[1] || '',
+        data: values[2] || '',
+        remark: values[3] || '',
+        operator: values[4] || '',
+        timestamp: values[5] || '',
+        amendReason: values[7] || ''
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// 获取操作类型标签
+const getActionLabel = (action) => {
+  const actionNum = parseInt(action)
+  const map = {
+    0: '创建',
+    1: '采收',
+    2: '加工',
+    3: '入库',
+    4: '出库',
+    5: '修正'
+  }
+  return map[actionNum] || action
+}
+
+// 获取阶段标签
+const getStageLabel = (stage) => {
+  const stageNum = parseInt(stage)
+  const map = {
+    0: '原料商',
+    1: '加工商',
+    2: '仓储商',
+    3: '销售商'
+  }
+  return map[stageNum] || stage
 }
 
 // 切换 Tab 时加载数据
@@ -325,37 +415,123 @@ watch(dialogVisible, (val) => {
         </div>
       </el-tab-pane>
 
-      <!-- 溯源验证 -->
-      <el-tab-pane label="溯源验证" name="verify" v-if="traceCode">
+      <!-- 溯源验证 - 链上数据详情 -->
+      <el-tab-pane label="链上数据" name="verify" v-if="props.traceCode">
         <div v-if="loading" class="loading-state">
           <el-icon class="is-loading"><Loading /></el-icon>
-          <span>正在验证溯源码...</span>
+          <span>正在获取链上数据...</span>
         </div>
         <div v-else-if="verifyResult" class="data-section">
-          <div class="verify-result">
+          <!-- 验证状态 -->
+          <div class="verify-result" :class="{ success: verifyResult.exists }">
             <div class="verify-icon" :class="{ success: verifyResult.exists }">
-              <el-icon :size="48">
+              <el-icon :size="40">
                 <CircleCheckFilled v-if="verifyResult.exists" />
                 <CircleCloseFilled v-else />
               </el-icon>
             </div>
-            <h3>{{ verifyResult.exists ? '验证通过' : '验证失败' }}</h3>
-            <p>{{ verifyResult.exists ? '该溯源码在区块链上真实存在' : '未在区块链上找到该溯源码' }}</p>
+            <div class="verify-text">
+              <h3>{{ verifyResult.exists ? '链上数据验证通过' : '验证失败' }}</h3>
+              <p>{{ verifyResult.exists ? '以下数据来自区块链，不可篡改' : '未在区块链上找到该溯源码' }}</p>
+            </div>
           </div>
+
           <div class="data-item">
             <span class="label">溯源码</span>
             <span class="value code">{{ verifyResult.trace_code }}</span>
           </div>
-          <div class="data-item">
-            <span class="label">链上状态</span>
-            <el-tag :type="verifyResult.on_chain ? 'success' : 'info'" size="small">
-              {{ verifyResult.on_chain ? '已上链' : '未上链' }}
-            </el-tag>
-          </div>
+
+          <!-- 链上产品信息 -->
+          <template v-if="verifyResult.product_info">
+            <div class="chain-data-section">
+              <h4>
+                <el-icon><Document /></el-icon>
+                链上产品信息
+              </h4>
+              <div class="chain-data-card">
+                <template v-if="parseProductInfo(verifyResult.product_info)">
+                  <div class="chain-data-row" v-if="parseProductInfo(verifyResult.product_info).name">
+                    <span class="data-label">产品名称</span>
+                    <span class="data-value">{{ parseProductInfo(verifyResult.product_info).name }}</span>
+                  </div>
+                  <div class="chain-data-row" v-if="parseProductInfo(verifyResult.product_info).category">
+                    <span class="data-label">产品类别</span>
+                    <span class="data-value">{{ parseProductInfo(verifyResult.product_info).category }}</span>
+                  </div>
+                  <div class="chain-data-row" v-if="parseProductInfo(verifyResult.product_info).origin">
+                    <span class="data-label">产地</span>
+                    <span class="data-value">{{ parseProductInfo(verifyResult.product_info).origin }}</span>
+                  </div>
+                  <div class="chain-data-row" v-if="parseProductInfo(verifyResult.product_info).quantity">
+                    <span class="data-label">数量</span>
+                    <span class="data-value">
+                      {{ parseProductInfo(verifyResult.product_info).quantity }}
+                      {{ parseProductInfo(verifyResult.product_info).unit }}
+                    </span>
+                  </div>
+                  <div class="chain-data-row" v-if="parseProductInfo(verifyResult.product_info).operator">
+                    <span class="data-label">操作人</span>
+                    <span class="data-value">{{ parseProductInfo(verifyResult.product_info).operator }}</span>
+                  </div>
+                </template>
+                <template v-else>
+                  <pre class="raw-data">{{ JSON.stringify(verifyResult.product_info, null, 2) }}</pre>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- 链上记录列表 -->
+          <template v-if="verifyResult.chain_records && verifyResult.chain_records.length > 0">
+            <div class="chain-data-section">
+              <h4>
+                <el-icon><List /></el-icon>
+                链上操作记录 ({{ verifyResult.record_count }} 条)
+              </h4>
+              <div class="chain-records-list">
+                <div
+                  v-for="record in verifyResult.chain_records"
+                  :key="record.index"
+                  class="chain-record-item"
+                >
+                  <div class="record-index">#{{ record.index + 1 }}</div>
+                  <div class="record-content">
+                    <template v-if="parseChainRecord(record)">
+                      <div class="record-tags">
+                        <el-tag size="small" type="info">{{ getStageLabel(parseChainRecord(record).stage) }}</el-tag>
+                        <el-tag size="small" :type="parseChainRecord(record).action === '5' ? 'warning' : 'primary'">
+                          {{ getActionLabel(parseChainRecord(record).action) }}
+                        </el-tag>
+                      </div>
+                      <div v-if="parseChainRecord(record).data" class="record-data">
+                        数据: {{ parseChainRecord(record).data }}
+                      </div>
+                      <div v-if="parseChainRecord(record).operator" class="record-operator">
+                        操作人: {{ parseChainRecord(record).operator }}
+                      </div>
+                      <div v-if="parseChainRecord(record).amendReason" class="record-amend-reason">
+                        修正原因: {{ parseChainRecord(record).amendReason }}
+                      </div>
+                    </template>
+                    <template v-else>
+                      <pre class="raw-data-small">{{ record.raw }}</pre>
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 原始数据展开 -->
+          <el-collapse class="raw-data-collapse">
+            <el-collapse-item title="查看原始链上数据" name="raw">
+              <pre class="raw-json">{{ JSON.stringify(verifyResult, null, 2) }}</pre>
+            </el-collapse-item>
+          </el-collapse>
         </div>
         <div v-else class="empty-state">
           <el-icon><Warning /></el-icon>
-          <span>验证失败</span>
+          <span>获取链上数据失败</span>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -475,30 +651,147 @@ watch(dialogVisible, (val) => {
 }
 
 .verify-result {
-  text-align: center;
-  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
   margin-bottom: 20px;
-  background: var(--bg-color);
+  background: linear-gradient(135deg, rgba(245, 34, 45, 0.08), rgba(245, 34, 45, 0.03));
+  border: 1px solid rgba(245, 34, 45, 0.2);
   border-radius: 12px;
 }
 
+.verify-result.success {
+  background: linear-gradient(135deg, rgba(82, 196, 26, 0.08), rgba(82, 196, 26, 0.03));
+  border-color: rgba(82, 196, 26, 0.2);
+}
+
 .verify-icon {
-  margin-bottom: 12px;
   color: #f5222d;
+  flex-shrink: 0;
 }
 
 .verify-icon.success {
   color: #52c41a;
 }
 
-.verify-result h3 {
-  font-size: 18px;
+.verify-text h3 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.verify-text p {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* 链上数据区块样式 */
+.chain-data-section {
+  margin-top: 20px;
+}
+
+.chain-data-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.chain-data-card {
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.05), rgba(118, 75, 162, 0.05));
+  border: 1px solid rgba(102, 126, 234, 0.15);
+  border-radius: 10px;
+}
+
+.chain-data-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px dashed rgba(102, 126, 234, 0.1);
+}
+
+.chain-data-row:last-child {
+  border-bottom: none;
+}
+
+.chain-data-row .data-label {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.chain-data-row .data-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: #667eea;
+}
+
+/* 链上记录列表 */
+.chain-records-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chain-record-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg-color);
+  border-radius: 8px;
+  border-left: 3px solid #667eea;
+}
+
+.record-index {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.record-content {
+  flex: 1;
+}
+
+.record-tags {
+  display: flex;
+  gap: 6px;
   margin-bottom: 8px;
 }
 
-.verify-result p {
-  color: var(--text-muted);
-  font-size: 14px;
+.record-data,
+.record-operator,
+.record-amend-reason {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.record-amend-reason {
+  color: #e6a23c;
+}
+
+.raw-data,
+.raw-data-small {
+  background: #f5f5f5;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.raw-data-small {
+  font-size: 10px;
+  max-height: 80px;
+  overflow-y: auto;
 }
 
 .raw-data-collapse {

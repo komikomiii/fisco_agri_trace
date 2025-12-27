@@ -24,9 +24,11 @@ export const blockchainApi = {
     return api.get(`/blockchain/verify/${traceCode}`)
   },
 
-  // 获取产品链上数据
+  // 获取产品链上数据(需要较长时间,增加超时)
   getProductChainData(traceCode) {
-    return api.get(`/blockchain/product/${traceCode}/chain-data`)
+    return api.get(`/blockchain/product/${traceCode}/chain-data`, {
+      timeout: 30000  // 30秒超时
+    })
   },
 
   // 检查区块链健康状态

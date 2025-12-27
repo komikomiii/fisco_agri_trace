@@ -388,6 +388,41 @@ async def amend_product(
     if not success:
         raise HTTPException(status_code=500, detail="区块链修正记录提交失败，请稍后重试")
 
+    # 同时更新产品表中的字段值（让前端显示最新数据）
+    field_to_update = amend_data.field
+    new_value = amend_data.new_value
+
+    # 字段名映射（前端字段名 -> 数据库字段名）
+    field_mapping = {
+        'harvest_date': 'harvest_date',
+        'harvestDate': 'harvest_date',
+        'batch_no': 'batch_no',
+        'batchNo': 'batch_no',
+        'name': 'name',
+        'category': 'category',
+        'origin': 'origin',
+        'quantity': 'quantity',
+        'unit': 'unit'
+    }
+
+    db_field = field_mapping.get(field_to_update, field_to_update)
+
+    # 根据字段类型转换值
+    if hasattr(product, db_field):
+        if db_field == 'quantity':
+            try:
+                setattr(product, db_field, float(new_value) if new_value else None)
+            except (ValueError, TypeError):
+                setattr(product, db_field, None)
+        elif db_field == 'harvest_date':
+            try:
+                from datetime import datetime as dt
+                setattr(product, db_field, dt.fromisoformat(new_value) if new_value else None)
+            except (ValueError, TypeError):
+                setattr(product, db_field, None)
+        else:
+            setattr(product, db_field, new_value if new_value else None)
+
     # 创建修正记录
     record = ProductRecord(
         product_id=product.id,

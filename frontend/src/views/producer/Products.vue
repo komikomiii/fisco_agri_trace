@@ -19,6 +19,13 @@ const USE_REAL_API = true
 const products = ref([])
 const loading = ref(false)
 
+// 各状态数量统计
+const statusCounts = reactive({
+  draft: 0,
+  on_chain: 0,
+  all: 0
+})
+
 // 搜索表单
 const searchForm = reactive({
   name: '',
@@ -31,9 +38,10 @@ const categories = ['蔬菜', '水果', '粮食', '水产', '畜禽', '其他']
 
 // 状态映射
 const chainStatusMap = {
-  draft: { label: '草稿', type: 'info' },
-  on_chain: { label: '已上链', type: 'success' },
-  terminated: { label: '已终止', type: 'danger' }
+  draft: { label: '未上链', type: 'warning', icon: 'EditPen' },
+  pending: { label: '上链中', type: 'primary', icon: 'Loading' },
+  on_chain: { label: '已上链', type: 'success', icon: 'CircleCheckFilled' },
+  terminated: { label: '已终止', type: 'danger', icon: 'CircleCloseFilled' }
 }
 
 // Tab 切换
@@ -45,9 +53,14 @@ const fetchProducts = async () => {
 
   loading.value = true
   try {
-    const status = activeTab.value === 'all' ? null : activeTab.value
-    const data = await producerApi.getProducts(status)
+    // 总是获取所有数据，然后前端过滤
+    const data = await producerApi.getProducts(null)
     products.value = data
+
+    // 更新各状态数量
+    statusCounts.draft = data.filter(p => p.status === 'draft').length
+    statusCounts.on_chain = data.filter(p => p.status === 'on_chain').length
+    statusCounts.all = data.length
   } catch (error) {
     ElMessage.error('获取产品列表失败')
     console.error(error)
@@ -56,15 +69,20 @@ const fetchProducts = async () => {
   }
 }
 
-// 监听 Tab 切换时重新加载
+// 监听 Tab 切换（不需要重新加载，只需前端过滤）
 const handleTabChange = () => {
-  fetchProducts()
+  // 数据已在内存中，无需重新请求
 }
 
 // 筛选后的产品列表
 const filteredProducts = computed(() => {
   if (USE_REAL_API) {
     let list = [...products.value]
+
+    // 根据当前 Tab 过滤状态
+    if (activeTab.value !== 'all') {
+      list = list.filter(p => p.status === activeTab.value)
+    }
 
     // 应用搜索过滤
     if (searchForm.name) {
@@ -354,6 +372,9 @@ const onChainConfirm = async () => {
 // ==================== 修正记录 ====================
 const amendVisible = ref(false)
 const amendingChain = ref(null)
+const amendChainConfirmVisible = ref(false)
+const amendChainConfirmRef = ref(null)
+const pendingAmendData = ref(null)
 
 const amendDataLabels = {
   name: '产品名称',
@@ -403,31 +424,66 @@ const fieldNameMap = {
   batchNo: 'batch_no'
 }
 
-const handleAmendSubmit = async (amendData) => {
+// AmendRecord 提交后，打开 ChainConfirm 确认
+const handleAmendSubmit = (amendData) => {
   if (!amendingChain.value) return
+
+  // 获取产品当前数据
+  const product = amendingChain.value
+  const currentData = getDetailData(product)
+
+  // 找出真正被修改的字段（比较原值和新值）
+  const changedFields = Object.keys(amendData.changes).filter(key => {
+    return amendData.changes[key] !== currentData[key]
+  })
+
+  if (changedFields.length === 0) {
+    ElMessage.warning('没有修改任何字段')
+    return
+  }
+
+  // 准备确认弹窗数据
+  const amendPreviewData = {}
+  const amendPreviewLabels = {}
+
+  changedFields.forEach(field => {
+    const label = amendDataLabels[field] || field
+    amendPreviewLabels[field] = label
+    amendPreviewData[field] = `${currentData[field] || '(空)'} → ${amendData.changes[field] || '(空)'}`
+  })
+
+  pendingAmendData.value = {
+    product,
+    currentData,
+    amendData,
+    changedFields,
+    previewData: amendPreviewData,
+    previewLabels: amendPreviewLabels
+  }
+
+  // 关闭 AmendRecord，打开 ChainConfirm
+  amendVisible.value = false
+  amendChainConfirmVisible.value = true
+}
+
+// 修正信息上链确认
+const onAmendChainConfirm = async () => {
+  if (!pendingAmendData.value) return
+
+  amendChainConfirmRef.value?.setLoading()
+
+  const { product, currentData, amendData, changedFields } = pendingAmendData.value
 
   if (USE_REAL_API) {
     try {
-      // 获取产品当前数据
-      const product = amendingChain.value
-      const currentData = getDetailData(product)
-
-      // 找出真正被修改的字段（比较原值和新值）
-      const changedFields = Object.keys(amendData.changes).filter(key => {
-        return amendData.changes[key] !== currentData[key]
-      })
-
-      if (changedFields.length === 0) {
-        ElMessage.warning('没有修改任何字段')
-        return
-      }
+      let lastResult = null
 
       // 提交每个修改的字段
       for (const field of changedFields) {
         // 转换字段名为后端格式
         const backendField = fieldNameMap[field] || field
 
-        await producerApi.amendProduct(product.id, {
+        lastResult = await producerApi.amendProduct(product.id, {
           field: backendField,
           old_value: String(currentData[field] || ''),
           new_value: String(amendData.changes[field]),
@@ -435,34 +491,46 @@ const handleAmendSubmit = async (amendData) => {
         })
       }
 
-      ElMessage.success('修正记录已提交上链')
-      amendVisible.value = false
+      // 显示成功状态
+      amendChainConfirmRef.value?.setSuccess(
+        product.trace_code || product.traceCode,
+        lastResult?.block_number,
+        lastResult?.tx_hash
+      )
+
+      // 刷新数据
       fetchProducts()
     } catch (error) {
-      ElMessage.error(error.response?.data?.detail || '提交修正记录失败')
+      amendChainConfirmRef.value?.setError(error.response?.data?.detail || error.message || '修正记录上链失败')
     }
     return
   }
 
   // 原有本地逻辑作为备用
   const originalRecord = amendingChain.value.records.find(r => r.action === 'create')
-  if (!originalRecord) return
+  if (!originalRecord) {
+    amendChainConfirmRef.value?.setError('未找到原始记录')
+    return
+  }
 
-  await productStore.addAmendRecord(
-    amendingChain.value.id,
-    originalRecord.id,
-    {
-      ...amendData.changes,
-      operator: {
-        id: userStore.user?.id || 1,
-        name: userStore.user?.name || '张三农场',
-        role: 'producer'
-      }
-    },
-    amendData.reason
-  )
-
-  ElMessage.success('修正记录已提交上链')
+  try {
+    await productStore.addAmendRecord(
+      amendingChain.value.id,
+      originalRecord.id,
+      {
+        ...amendData.changes,
+        operator: {
+          id: userStore.user?.id || 1,
+          name: userStore.user?.name || '张三农场',
+          role: 'producer'
+        }
+      },
+      amendData.reason
+    )
+    amendChainConfirmRef.value?.setSuccess('修正记录已提交')
+  } catch (error) {
+    amendChainConfirmRef.value?.setError('修正记录上链失败')
+  }
 }
 
 // ==================== 查看详情 ====================
@@ -483,6 +551,12 @@ const openChainVerify = (record) => {
   // 从记录或产品中获取区块高度
   verifyBlockNumber.value = record?.block_number || record?.blockNumber ||
                             detailChain.value?.block_number || detailChain.value?.blockNumber || null
+
+  console.log('openChainVerify - detailChain:', detailChain.value)
+  console.log('openChainVerify - verifyTraceCode:', verifyTraceCode.value)
+  console.log('openChainVerify - verifyTxHash:', verifyTxHash.value)
+  console.log('openChainVerify - verifyBlockNumber:', verifyBlockNumber.value)
+
   chainVerifyVisible.value = true
 }
 
@@ -565,6 +639,51 @@ const getActionLabel = (action) => {
   return map[actionLower] || action
 }
 
+// 字段标签映射
+const fieldLabelMap = {
+  name: '产品名称',
+  category: '产品类别',
+  origin: '产地',
+  harvest_date: '采收日期',
+  harvestDate: '采收日期',
+  quantity: '数量',
+  unit: '单位',
+  batch_no: '批次号',
+  batchNo: '批次号'
+}
+
+// 获取字段中文名
+const getFieldLabel = (field) => {
+  return fieldLabelMap[field] || field
+}
+
+// 解析修正记录数据
+const parseAmendData = (dataStr) => {
+  if (!dataStr) return []
+
+  try {
+    const data = typeof dataStr === 'string' ? JSON.parse(dataStr) : dataStr
+
+    // 如果是单个修改记录格式 { field, old_value, new_value }
+    if (data.field) {
+      return [{
+        field: data.field,
+        old_value: data.old_value,
+        new_value: data.new_value
+      }]
+    }
+
+    // 如果是多个字段的对象格式
+    return Object.keys(data).map(key => ({
+      field: key,
+      old_value: data[key]?.old,
+      new_value: data[key]?.new || data[key]
+    }))
+  } catch {
+    return []
+  }
+}
+
 // 重置搜索
 const resetSearch = () => {
   searchForm.name = ''
@@ -607,20 +726,22 @@ const resetSearch = () => {
 
       <!-- Tab 切换 -->
       <el-tabs v-model="activeTab" class="product-tabs" @tab-change="handleTabChange">
-        <el-tab-pane label="草稿" name="draft">
+        <el-tab-pane label="未上链" name="draft">
           <template #label>
-            <span>
-              草稿
-              <el-badge :value="products.filter(p => p.status === 'draft').length" :max="99" class="tab-badge" />
+            <span class="tab-label">
+              <el-icon><EditPen /></el-icon>
+              未上链
+              <el-badge :value="statusCounts.draft" :max="99" class="tab-badge" type="warning" />
             </span>
           </template>
         </el-tab-pane>
         <el-tab-pane label="已上链" name="on_chain">
           <template #label>
-            <span>
+            <span class="tab-label">
+              <el-icon><CircleCheckFilled /></el-icon>
               已上链
               <el-badge
-                :value="products.filter(p => p.status === 'on_chain').length"
+                :value="statusCounts.on_chain"
                 :max="99"
                 class="tab-badge"
                 type="success"
@@ -628,11 +749,19 @@ const resetSearch = () => {
             </span>
           </template>
         </el-tab-pane>
-        <el-tab-pane label="全部" name="all" />
+        <el-tab-pane label="全部" name="all">
+          <template #label>
+            <span class="tab-label">
+              <el-icon><List /></el-icon>
+              全部
+              <el-badge :value="statusCounts.all" :max="99" class="tab-badge" />
+            </span>
+          </template>
+        </el-tab-pane>
       </el-tabs>
 
-      <el-table :data="filteredProducts" stripe style="width: 100%" v-loading="loading">
-        <el-table-column prop="name" label="产品名称" min-width="140">
+      <el-table :data="filteredProducts" stripe style="width: 100%" v-loading="loading" :header-cell-style="{ background: '#f5f7fa', color: '#606266' }">
+        <el-table-column prop="name" label="产品名称" min-width="180">
           <template #default="{ row }">
             <div class="product-name">
               <el-avatar :size="36" shape="square" style="background: var(--primary-color)">
@@ -647,42 +776,48 @@ const resetSearch = () => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="category" label="类别" width="100">
+        <el-table-column prop="category" label="类别" width="90" align="center">
           <template #default="{ row }">
-            <el-tag effect="plain">{{ row.category }}</el-tag>
+            <el-tag effect="plain" size="small">{{ row.category }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="产地" min-width="120">
+        <el-table-column label="产地" min-width="140">
           <template #default="{ row }">
             {{ row.origin || '-' }}
           </template>
         </el-table-column>
-        <el-table-column label="数量" width="120">
+        <el-table-column label="数量" width="100" align="right">
           <template #default="{ row }">
-            {{ row.quantity || 0 }} {{ row.unit || 'kg' }}
+            <span class="quantity-text">{{ row.quantity || 0 }} <small>{{ row.unit || 'kg' }}</small></span>
           </template>
         </el-table-column>
-        <el-table-column label="分配方式" width="140">
+        <el-table-column label="分配方式" width="100" align="center">
           <template #default="{ row }">
-            <el-tag v-if="(row.distribution_type || row.distribution?.type) === 'pool'" type="info" effect="plain">
-              <el-icon><Collection /></el-icon>
-              公共池
-            </el-tag>
-            <el-tag v-else-if="row.distribution_type === 'assigned' || row.distribution?.assignedTo" type="warning" effect="plain">
-              <el-icon><Position /></el-icon>
-              指定发送
-            </el-tag>
-            <el-tag v-else type="info" effect="plain">
-              <el-icon><Collection /></el-icon>
-              公共池
-            </el-tag>
+            <el-tooltip
+              :content="(row.distribution_type || row.distribution?.type) === 'assigned' ? '指定发送给加工商' : '等待加工商领取'"
+              placement="top"
+            >
+              <span class="tag-content">
+                <el-icon class="tag-icon" :class="(row.distribution_type || row.distribution?.type) === 'assigned' ? 'warning' : 'info'">
+                  <Position v-if="(row.distribution_type || row.distribution?.type) === 'assigned'" />
+                  <Collection v-else />
+                </el-icon>
+                <span class="tag-text">{{ (row.distribution_type || row.distribution?.type) === 'assigned' ? '指定' : '公共池' }}</span>
+              </span>
+            </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+        <el-table-column prop="status" label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="chainStatusMap[row.status]?.type">
-              {{ chainStatusMap[row.status]?.label }}
-            </el-tag>
+            <span class="tag-content">
+              <el-icon class="tag-icon" :class="chainStatusMap[row.status]?.type || 'info'">
+                <CircleCheckFilled v-if="row.status === 'on_chain'" />
+                <EditPen v-else-if="row.status === 'draft'" />
+                <Loading v-else-if="row.status === 'pending'" class="is-loading" />
+                <CircleCloseFilled v-else />
+              </el-icon>
+              <span class="tag-text">{{ chainStatusMap[row.status]?.label || row.status }}</span>
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="280" fixed="right">
@@ -828,6 +963,33 @@ const resetSearch = () => {
       @submit="handleAmendSubmit"
     />
 
+    <!-- 修正信息上链确认组件 -->
+    <ChainConfirm
+      ref="amendChainConfirmRef"
+      v-model:visible="amendChainConfirmVisible"
+      title="确认修正信息上链"
+      :data="pendingAmendData?.previewData"
+      :data-labels="pendingAmendData?.previewLabels"
+      @confirm="onAmendChainConfirm"
+    >
+      <template #extra>
+        <div class="amend-confirm-info">
+          <div class="info-item">
+            <span class="label">产品名称：</span>
+            <span class="value">{{ pendingAmendData?.product?.name || pendingAmendData?.product?.productName }}</span>
+          </div>
+          <div class="info-item">
+            <span class="label">溯源码：</span>
+            <span class="value code">{{ pendingAmendData?.product?.trace_code || pendingAmendData?.product?.traceCode }}</span>
+          </div>
+          <div class="info-item">
+            <span class="label">修正原因：</span>
+            <span class="value reason">{{ pendingAmendData?.amendData?.reason }}</span>
+          </div>
+        </div>
+      </template>
+    </ChainConfirm>
+
     <!-- 详情抽屉 -->
     <el-drawer
       v-model="detailDrawerVisible"
@@ -901,6 +1063,19 @@ const resetSearch = () => {
                   <span class="action">{{ getActionLabel(record.action) }}</span>
                   <span class="operator">{{ record.operator?.name || record.operator_name }}</span>
                 </div>
+
+                <!-- 修正记录的具体修改内容 -->
+                <div v-if="(record.action === 'AMEND' || record.action === 'amend') && record.data" class="amend-changes">
+                  <div class="amend-change-item" v-for="change in parseAmendData(record.data)" :key="change.field">
+                    <span class="field-label">{{ getFieldLabel(change.field) }}</span>
+                    <div class="change-values">
+                      <span class="old-val">{{ change.old_value || '(空)' }}</span>
+                      <el-icon class="arrow-icon"><Right /></el-icon>
+                      <span class="new-val">{{ change.new_value || '(空)' }}</span>
+                    </div>
+                  </div>
+                </div>
+
                 <div v-if="record.txHash || record.tx_hash" class="chain-info-box" @click="openChainVerify(record)">
                   <div class="chain-badge">
                     <el-icon><Connection /></el-icon>
@@ -970,8 +1145,59 @@ const resetSearch = () => {
   margin-bottom: 16px;
 }
 
+.tab-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .tab-badge {
   margin-left: 6px;
+}
+
+/* 表格标签样式 */
+.tag-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.tag-icon {
+  font-size: 14px;
+}
+
+.tag-icon.info {
+  color: #909399;
+}
+
+.tag-icon.warning {
+  color: #e6a23c;
+}
+
+.tag-icon.success {
+  color: #67c23a;
+}
+
+.tag-icon.danger {
+  color: #f56c6c;
+}
+
+.tag-icon.primary {
+  color: #409eff;
+}
+
+.tag-text {
+  color: var(--text-primary);
+}
+
+.quantity-text {
+  font-weight: 500;
+}
+
+.quantity-text small {
+  color: var(--text-muted);
+  font-weight: normal;
 }
 
 .product-name {
@@ -1155,4 +1381,102 @@ const resetSearch = () => {
   padding: 24px;
   color: var(--text-secondary);
 }
+
+/* 修正信息确认样式 */
+.amend-confirm-info {
+  margin-top: 16px;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(230, 162, 60, 0.1), rgba(230, 162, 60, 0.05));
+  border: 1px solid rgba(230, 162, 60, 0.3);
+  border-radius: 10px;
+}
+
+.amend-confirm-info .info-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.amend-confirm-info .info-item:not(:last-child) {
+  border-bottom: 1px dashed rgba(230, 162, 60, 0.2);
+}
+
+.amend-confirm-info .label {
+  color: var(--text-muted);
+  font-size: 13px;
+  flex-shrink: 0;
+  min-width: 80px;
+}
+
+.amend-confirm-info .value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.amend-confirm-info .value.code {
+  font-family: monospace;
+  color: #667eea;
+}
+
+.amend-confirm-info .value.reason {
+  color: #e6a23c;
+}
+
+/* 修正记录变更详情样式 */
+.amend-changes {
+  margin: 10px 0;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(230, 162, 60, 0.08), rgba(230, 162, 60, 0.03));
+  border: 1px solid rgba(230, 162, 60, 0.2);
+  border-radius: 8px;
+}
+
+.amend-change-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.amend-change-item:not(:last-child) {
+  border-bottom: 1px dashed rgba(230, 162, 60, 0.15);
+}
+
+.amend-change-item .field-label {
+  min-width: 70px;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.amend-change-item .change-values {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  font-size: 13px;
+}
+
+.amend-change-item .old-val {
+  padding: 2px 8px;
+  background: rgba(245, 108, 108, 0.1);
+  color: #f56c6c;
+  border-radius: 4px;
+  text-decoration: line-through;
+}
+
+.amend-change-item .arrow-icon {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.amend-change-item .new-val {
+  padding: 2px 8px;
+  background: rgba(103, 194, 58, 0.1);
+  color: #67c23a;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
 </style>
