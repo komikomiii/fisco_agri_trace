@@ -33,5 +33,10 @@
     "username": "加工1",
     "address": "0xe39897Cb0606d012F6101623829E547F8EB022FE",
     "keystore": "/home/pdm/DEV/komi-project/keystore/user_7.json"
+  },
+  "8": {
+    "username": "质检1",
+    "address": "0x1e1b016259E4C5a7c88e0DF81e69c093061d2f80",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_8.json"
   }
 }

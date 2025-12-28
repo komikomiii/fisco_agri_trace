@@ -30,6 +30,7 @@ class RecordAction(str, enum.Enum):
     RECEIVE = "receive"        # 接收
     PROCESS = "process"        # 加工
     SEND_INSPECT = "send_inspect"  # 送检
+    START_INSPECT = "start_inspect"  # 开始检测
     INSPECT = "inspect"        # 质检
     REJECT = "reject"          # 退回
     TERMINATE = "terminate"    # 终止

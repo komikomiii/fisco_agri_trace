@@ -1,45 +1,26 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useProductStore } from '../../store/product'
 import { useUserStore } from '../../store/user'
-import { useNotificationStore } from '../../store/notification'
 import ChainConfirm from '../../components/common/ChainConfirm.vue'
+import ChainVerify from '../../components/common/ChainVerify.vue'
 import TraceCode from '../../components/common/TraceCode.vue'
-import RejectDialog from '../../components/common/RejectDialog.vue'
+import * as inspectorApi from '../../api/inspector'
 
-const productStore = useProductStore()
 const userStore = useUserStore()
-const notificationStore = useNotificationStore()
+
+// 产品数据
+const pendingProducts = ref([])
+const testingProducts = ref([])
+const completedProducts = ref([])
+const loading = ref(false)
+
+// 链上数据验证
+const chainVerifyVisible = ref(false)
+const verifyTraceCode = ref('')
 
 // Tab 切换
 const activeTab = ref('pending')
-
-// 待检测产品
-const pendingProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'inspector' &&
-    !c.records.some(r => r.action === 'inspect')
-  )
-})
-
-// 检测中的产品
-const testingProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'inspector' &&
-    c.records.some(r => r.action === 'start_inspect') &&
-    !c.records.some(r => r.action === 'inspect')
-  )
-})
-
-// 已完成的产品
-const completedProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.records.some(r => r.action === 'inspect')
-  )
-})
 
 // 当前显示的列表
 const currentList = computed(() => {
@@ -56,218 +37,205 @@ const statusMap = {
   completed: { label: '已完成', type: 'success' }
 }
 
-// ==================== 开始检测 ====================
-const startInspect = async (chain) => {
-  await productStore.addRecord(chain.id, {
-    stage: 'inspector',
-    action: 'start_inspect',
-    data: {
-      startTime: new Date().toISOString()
-    },
-    operator: {
-      id: userStore.user?.id || 3,
-      name: userStore.user?.name || '李质检',
-      role: 'inspector'
-    }
-  })
-  ElMessage.success('开始检测')
+// 质检类型映射
+const inspectTypeMap = {
+  quality: '质量检测',
+  safety: '安全检测',
+  appearance: '外观检测'
 }
 
-// ==================== 填写检测报告 ====================
-const reportDialogVisible = ref(false)
-const currentChain = ref(null)
-const inspectForm = ref({
-  result: 'pass',
-  items: [
-    { name: '农药残留', value: '未检出', standard: '≤0.1mg/kg', pass: true },
-    { name: '重金属', value: '0.02mg/kg', standard: '≤0.5mg/kg', pass: true },
-    { name: '微生物', value: '合格', standard: '无致病菌', pass: true }
-  ],
+// ==================== 开始检测 ====================
+const startInspectVisible = ref(false)
+const startInspectForm = ref({
+  productId: null,
+  inspectType: 'quality',
   notes: ''
 })
+const startInspectRef = ref(null)
 
-const openReportDialog = (chain) => {
-  currentChain.value = chain
-  inspectForm.value = {
-    result: 'pass',
-    items: [
-      { name: '农药残留', value: '', standard: '≤0.1mg/kg', pass: true },
-      { name: '重金属', value: '', standard: '≤0.5mg/kg', pass: true },
-      { name: '微生物', value: '', standard: '无致病菌', pass: true }
-    ],
+const openStartInspect = (product) => {
+  startInspectForm.value = {
+    productId: product.id,
+    inspectType: product.inspect_type || 'quality',
     notes: ''
   }
-  reportDialogVisible.value = true
+  startInspectVisible.value = true
 }
 
-// 更新检测项结果
-const updateItemResult = (item) => {
-  // 根据检测值和标准值判断是否合格（简化处理）
-  item.pass = !item.value.includes('超标') && !item.value.includes('不合格')
+const onStartInspectConfirm = async () => {
+  if (!startInspectForm.value.productId) return
+
+  startInspectRef.value?.setLoading()
+
+  try {
+    await inspectorApi.startInspect(
+      startInspectForm.value.productId,
+      {
+        product_id: startInspectForm.value.productId,
+        inspect_type: startInspectForm.value.inspectType,
+        notes: startInspectForm.value.notes
+      }
+    )
+
+    startInspectRef.value?.setSuccess()
+    ElMessage.success('开始检测成功')
+
+    startInspectVisible.value = false
+    await fetchPendingProducts()
+    await fetchTestingProducts()
+  } catch (error) {
+    startInspectRef.value?.setError(error.response?.data?.detail || '开始检测失败')
+  }
 }
 
-// ==================== 提交检测报告（上链） ====================
-const chainConfirmVisible = ref(false)
-const chainConfirmRef = ref(null)
+// ==================== 完成检测 ====================
+const inspectVisible = ref(false)
+const inspectConfirmVisible = ref(false)  // 新增：上链确认对话框
+const inspectForm = ref({
+  productId: null,
+  productName: '',
+  traceCode: '',
+  qualified: true,
+  qualityGrade: 'A',
+  inspectResult: '',
+  issues: '',
+  notes: ''
+})
+const inspectRef = ref(null)
 
-const confirmReport = () => {
-  // 验证
-  const hasEmpty = inspectForm.value.items.some(item => !item.value)
-  if (hasEmpty) {
-    ElMessage.warning('请填写所有检测项的检测值')
+const openInspect = (product) => {
+  inspectForm.value = {
+    productId: product.id,
+    productName: product.name,
+    traceCode: product.trace_code,
+    qualified: true,
+    qualityGrade: 'A',
+    inspectResult: '',
+    issues: '',
+    notes: ''
+  }
+  inspectVisible.value = true
+}
+
+const onInspectConfirm = async () => {
+  if (!inspectForm.value.productId) return
+
+  if (!inspectForm.value.inspectResult) {
+    ElMessage.warning('请填写检测结果')
     return
   }
 
-  reportDialogVisible.value = false
-  chainConfirmVisible.value = true
+  // 关闭表单对话框，打开确认对话框
+  inspectVisible.value = false
+  inspectConfirmVisible.value = true
 }
 
-const getReportPreviewData = () => {
-  if (!currentChain.value) return {}
-  const processRecord = currentChain.value.records.find(r => r.action === 'process')
-  return {
-    productName: processRecord?.data?.outputProduct || currentChain.value.productName,
-    traceCode: currentChain.value.traceCode,
-    result: inspectForm.value.result === 'pass' ? '合格' : '不合格',
-    itemsCount: `${inspectForm.value.items.filter(i => i.pass).length}/${inspectForm.value.items.length} 项合格`
-  }
-}
+const onInspectChainConfirm = async () => {
+  if (!inspectForm.value.productId) return
 
-const onReportConfirm = async () => {
-  if (!currentChain.value) return
-
-  chainConfirmRef.value?.setLoading()
+  inspectRef.value?.setLoading()
 
   try {
-    const reportNo = `R${new Date().toISOString().slice(0, 10).replace(/-/g, '')}${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`
-
-    const result = await productStore.addRecord(currentChain.value.id, {
-      stage: 'inspector',
-      action: 'inspect',
-      data: {
-        result: inspectForm.value.result,
-        items: inspectForm.value.items,
-        notes: inspectForm.value.notes,
-        reportNo
-      },
-      operator: {
-        id: userStore.user?.id || 3,
-        name: userStore.user?.name || '李质检',
-        role: 'inspector'
+    const result = await inspectorApi.inspectProduct(
+      inspectForm.value.productId,
+      {
+        product_id: inspectForm.value.productId,
+        qualified: inspectForm.value.qualified,
+        quality_grade: inspectForm.value.qualityGrade,
+        inspect_result: inspectForm.value.inspectResult,
+        issues: inspectForm.value.issues,
+        notes: inspectForm.value.notes
       }
-    })
+    )
 
-    if (result) {
-      // 如果合格，更新产品链阶段到销售商
-      if (inspectForm.value.result === 'pass') {
-        currentChain.value.currentStage = 'seller'
+    inspectRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
 
-        // 通知销售商
-        notificationStore.addNotification({
-          type: notificationStore.NOTIFICATION_TYPES.PENDING,
-          title: '新产品可入库',
-          content: `${getReportPreviewData().productName}已通过质检，可以入库销售。`,
-          relatedTraceCode: currentChain.value.traceCode
-        })
-      }
-
-      chainConfirmRef.value?.setSuccess(result.txHash, result.blockNumber)
-      ElMessage.success('检测报告已提交上链')
+    if (result.qualified) {
+      ElMessage.success('检测合格，产品已进入销售环节')
     } else {
-      chainConfirmRef.value?.setError('提交失败，请重试')
+      ElMessage.warning('检测不合格，产品已被标记')
     }
+
+    await fetchTestingProducts()
+    await fetchCompletedProducts()
   } catch (error) {
-    chainConfirmRef.value?.setError(error.message || '提交失败')
+    inspectRef.value?.setError(error.response?.data?.detail || '检测失败')
   }
 }
 
-// ==================== 退回/终止功能 ====================
-const rejectDialogVisible = ref(false)
-const rejectingChain = ref(null)
-
-const openRejectDialog = (chain) => {
-  rejectingChain.value = chain
-  rejectDialogVisible.value = true
-}
-
-const handleReject = async (data) => {
-  if (!rejectingChain.value) return
-
+// ==================== 数据获取 ====================
+const fetchPendingProducts = async () => {
   try {
-    if (data.action === 'reject') {
-      await productStore.rejectToStage(
-        rejectingChain.value.id,
-        data.rejectTo,
-        data.reason,
-        {
-          id: userStore.user?.id || 3,
-          name: userStore.user?.name || '李质检',
-          role: 'inspector'
-        }
-      )
-
-      // 通知被退回方
-      notificationStore.addNotification({
-        type: notificationStore.NOTIFICATION_TYPES.REJECT,
-        title: '产品被退回',
-        content: `您的产品"${rejectingChain.value.productName}"被质检员退回，原因：${data.reason}。请重新处理后再次送检。`,
-        relatedTraceCode: rejectingChain.value.traceCode
-      })
-
-      ElMessage.success('已退回，相关方已收到通知')
-    } else if (data.action === 'terminate') {
-      await productStore.terminateChain(
-        rejectingChain.value.id,
-        data.reason,
-        data.disposal,
-        {
-          id: userStore.user?.id || 3,
-          name: userStore.user?.name || '李质检',
-          role: 'inspector'
-        }
-      )
-
-      // 通知所有参与方
-      notificationStore.addNotification({
-        type: notificationStore.NOTIFICATION_TYPES.TERMINATE,
-        title: '产品链已终止',
-        content: `您参与的产品链 ${rejectingChain.value.traceCode}（${rejectingChain.value.productName}）已被终止。原因：${data.reason}。`,
-        relatedTraceCode: rejectingChain.value.traceCode
-      })
-
-      ElMessage.success('产品链已终止，相关方已收到通知')
-    }
+    loading.value = true
+    const data = await inspectorApi.getPendingProducts()
+    pendingProducts.value = data
   } catch (error) {
-    ElMessage.error(error.message || '操作失败')
+    ElMessage.error('获取待检测产品列表失败')
+  } finally {
+    loading.value = false
   }
 }
+
+const fetchTestingProducts = async () => {
+  try {
+    loading.value = true
+    const data = await inspectorApi.getTestingProducts()
+    testingProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取检测中产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+const fetchCompletedProducts = async () => {
+  try {
+    loading.value = true
+    const data = await inspectorApi.getCompletedProducts()
+    completedProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取已完成产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchPendingProducts()
+  fetchTestingProducts()
+  fetchCompletedProducts()
+})
 
 // ==================== 查看详情 ====================
 const detailDrawerVisible = ref(false)
-const detailChain = ref(null)
+const detailProduct = ref(null)
+const detailRecords = ref([])
+const detailLoading = ref(false)
 
-const viewDetail = (chain) => {
-  detailChain.value = chain
+const viewDetail = async (product) => {
+  detailProduct.value = product
   detailDrawerVisible.value = true
+
+  try {
+    detailLoading.value = true
+    const records = await inspectorApi.getProductRecords(product.id)
+    detailRecords.value = records
+  } catch (error) {
+    console.error('获取记录失败:', error)
+    detailRecords.value = []
+  } finally {
+    detailLoading.value = false
+  }
 }
 
-// 获取产品状态
-const getProductStatus = (chain) => {
-  if (chain.records.some(r => r.action === 'inspect')) return 'completed'
-  if (chain.records.some(r => r.action === 'start_inspect')) return 'testing'
-  return 'pending'
+const viewChainData = (product) => {
+  verifyTraceCode.value = product.trace_code
+  chainVerifyVisible.value = true
 }
 
-// 获取检测记录数据
-const getInspectData = (chain) => {
-  const inspectRecord = chain.records.find(r => r.action === 'inspect')
-  return inspectRecord?.data || {}
-}
-
-// 获取加工信息
-const getProcessInfo = (chain) => {
-  const processRecord = chain.records.find(r => r.action === 'process')
-  return processRecord?.data || {}
+const openChainVerify = (record) => {
+  verifyTraceCode.value = detailProduct.value.trace_code
+  chainVerifyVisible.value = true
 }
 
 // 格式化时间
@@ -278,37 +246,45 @@ const formatTime = (timestamp) => {
 
 // 获取操作描述
 const getActionLabel = (action) => {
+  const actionLower = action?.toLowerCase() || ''
   const map = {
-    create: '原料登记',
-    harvest: '采收出库',
-    amend: '信息修正',
-    receive: '接收确认',
+    create: '创建记录',
+    amend: '修正信息',
+    harvest: '采收上链',
+    receive: '接收原料',
     process: '加工处理',
     send_inspect: '送检',
-    start_inspect: '开始检测',
-    inspect: '检测完成',
+    inspect: '质量检测',
+    stock: '入库登记',
     reject: '退回处理',
     terminate: '终止链条',
-    stock: '入库登记'
+    start_inspect: '开始检测'
   }
-  return map[action] || action
+  return map[actionLower] || action
 }
 </script>
 
 <template>
-  <div class="pending-container">
-    <el-card>
+  <div class="inspector-container">
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <h2>
+        <el-icon><DocumentChecked /></el-icon>
+        质量检测
+      </h2>
+      <p>对待检测产品进行质量检验</p>
+    </div>
+
+    <!-- 检测记录卡片 -->
+    <el-card class="inspector-card">
       <template #header>
         <div class="card-header">
-          <span class="title">
-            <el-icon><Document /></el-icon>
-            待检产品
-          </span>
+          <span>检测记录</span>
         </div>
       </template>
 
       <!-- Tab 切换 -->
-      <el-tabs v-model="activeTab" class="inspect-tabs">
+      <el-tabs v-model="activeTab" class="inspector-tabs">
         <el-tab-pane name="pending">
           <template #label>
             <span>
@@ -321,12 +297,7 @@ const getActionLabel = (action) => {
           <template #label>
             <span>
               检测中
-              <el-badge
-                :value="testingProducts.length"
-                :max="99"
-                class="tab-badge"
-                type="primary"
-              />
+              <el-badge :value="testingProducts.length" :max="99" class="tab-badge" type="primary" />
             </span>
           </template>
         </el-tab-pane>
@@ -334,52 +305,45 @@ const getActionLabel = (action) => {
           <template #label>
             <span>
               已完成
-              <el-badge
-                :value="completedProducts.length"
-                :max="99"
-                class="tab-badge"
-                type="success"
-              />
+              <el-badge :value="completedProducts.length" :max="99" class="tab-badge" type="success" />
             </span>
           </template>
         </el-tab-pane>
       </el-tabs>
 
-      <el-table :data="currentList" stripe>
-        <el-table-column prop="productName" label="产品" min-width="160">
+      <el-table :data="currentList" stripe v-loading="loading">
+        <el-table-column prop="name" label="产品" min-width="160">
           <template #default="{ row }">
             <div class="product-info">
-              <el-avatar :size="36" shape="square" style="background: #722ed1">
-                {{ (getProcessInfo(row).outputProduct || row.productName).charAt(0) }}
+              <el-avatar :size="36" shape="square" style="background: #67c23a">
+                {{ row.name.charAt(0) }}
               </el-avatar>
               <div class="info">
-                <span class="name">{{ getProcessInfo(row).outputProduct || row.productName }}</span>
-                <span class="code">{{ row.traceCode }}</span>
+                <span class="name">{{ row.name }}</span>
+                <span class="code">{{ row.trace_code }}</span>
+                <span v-if="row.process_type" class="process-info">
+                  加工: {{ row.process_type }}
+                </span>
               </div>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="送检单位" width="120">
+        <el-table-column label="检测类型" width="120">
           <template #default="{ row }">
-            {{ row.records.find(r => r.action === 'process')?.operator?.name || '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="送检时间" width="160">
-          <template #default="{ row }">
-            {{ formatTime(row.records.find(r => r.action === 'send_inspect')?.timestamp) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="检测结果" width="100" v-if="activeTab === 'completed'">
-          <template #default="{ row }">
-            <el-tag :type="getInspectData(row).result === 'pass' ? 'success' : 'danger'">
-              {{ getInspectData(row).result === 'pass' ? '合格' : '不合格' }}
+            <el-tag type="warning" effect="plain">
+              {{ inspectTypeMap[row.inspect_type] || '质量检测' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100" v-else>
+        <el-table-column label="数量" width="100">
           <template #default="{ row }">
-            <el-tag :type="statusMap[getProductStatus(row)]?.type">
-              {{ statusMap[getProductStatus(row)]?.label }}
+            <span class="quantity">{{ row.quantity }} {{ row.unit || 'kg' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="statusMap[row.status]?.type">
+              {{ statusMap[row.status]?.label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -391,38 +355,35 @@ const getActionLabel = (action) => {
 
             <!-- 待检测：开始检测 -->
             <el-button
-              v-if="getProductStatus(row) === 'pending'"
-              type="primary"
+              v-if="row.status === 'pending'"
+              type="success"
               text
               size="small"
-              @click="startInspect(row)"
+              @click="openStartInspect(row)"
             >
               <el-icon><VideoPlay /></el-icon>
               开始检测
             </el-button>
 
-            <!-- 检测中：填写报告、退回/终止 -->
-            <template v-if="getProductStatus(row) === 'testing'">
-              <el-button type="success" text size="small" @click="openReportDialog(row)">
-                <el-icon><Edit /></el-icon>
-                填写报告
-              </el-button>
-              <el-button type="danger" text size="small" @click="openRejectDialog(row)">
-                <el-icon><Close /></el-icon>
-                退回/终止
-              </el-button>
-            </template>
-
-            <!-- 已完成：查看报告 -->
+            <!-- 检测中：完成检测 -->
             <el-button
-              v-if="getProductStatus(row) === 'completed'"
+              v-if="row.status === 'testing'"
               type="success"
               text
               size="small"
-              @click="viewDetail(row)"
+              @click="openInspect(row)"
             >
-              查看报告
+              <el-icon><Select /></el-icon>
+              完成检测
             </el-button>
+
+            <!-- 已完成：查看结果 -->
+            <el-tag v-if="row.status === 'completed' && row.qualified" type="success" size="small">
+              合格 {{ row.quality_grade }}级
+            </el-tag>
+            <el-tag v-else-if="row.status === 'completed'" type="danger" size="small">
+              不合格
+            </el-tag>
           </template>
         </el-table-column>
       </el-table>
@@ -431,177 +392,220 @@ const getActionLabel = (action) => {
       <el-empty v-if="currentList.length === 0" description="暂无记录" />
     </el-card>
 
-    <!-- 填写检测报告对话框 -->
-    <el-dialog v-model="reportDialogVisible" title="填写检测报告" width="650px">
-      <el-form :model="inspectForm" label-width="100px">
-        <el-form-item label="检测结果">
-          <el-radio-group v-model="inspectForm.result" size="large">
-            <el-radio-button value="pass">
-              <el-icon><CircleCheck /></el-icon>
-              合格
-            </el-radio-button>
-            <el-radio-button value="fail">
-              <el-icon><CircleClose /></el-icon>
-              不合格
-            </el-radio-button>
-          </el-radio-group>
+    <!-- 开始检测对话框 -->
+    <el-dialog v-model="startInspectVisible" title="开始检测" width="500px">
+      <el-form :model="startInspectForm" label-width="100px">
+        <el-form-item label="检测类型">
+          <el-select v-model="startInspectForm.inspectType" style="width: 100%">
+            <el-option label="质量检测" value="quality" />
+            <el-option label="安全检测" value="safety" />
+            <el-option label="外观检测" value="appearance" />
+          </el-select>
         </el-form-item>
-
-        <el-form-item label="检测项目">
-          <el-table :data="inspectForm.items" border size="small">
-            <el-table-column prop="name" label="检测项" width="120" />
-            <el-table-column label="检测值" width="160">
-              <template #default="{ row }">
-                <el-input
-                  v-model="row.value"
-                  size="small"
-                  placeholder="请输入检测值"
-                  @change="updateItemResult(row)"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column prop="standard" label="标准值" width="140" />
-            <el-table-column label="结果" width="100">
-              <template #default="{ row }">
-                <el-switch
-                  v-model="row.pass"
-                  active-text="合格"
-                  inactive-text="不合格"
-                  inline-prompt
-                />
-              </template>
-            </el-table-column>
-          </el-table>
-        </el-form-item>
-
-        <el-form-item label="备注说明">
+        <el-form-item label="备注">
           <el-input
-            v-model="inspectForm.notes"
+            v-model="startInspectForm.notes"
             type="textarea"
             :rows="3"
             placeholder="可选填写检测备注"
           />
         </el-form-item>
       </el-form>
-
       <template #footer>
-        <el-button @click="reportDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="confirmReport">
-          <el-icon><Connection /></el-icon>
-          提交上链
+        <el-button @click="startInspectVisible = false">取消</el-button>
+        <el-button type="primary" @click="onStartInspectConfirm">
+          确认开始
         </el-button>
       </template>
     </el-dialog>
 
-    <!-- 上链确认 -->
-    <ChainConfirm
-      ref="chainConfirmRef"
-      v-model:visible="chainConfirmVisible"
-      title="确认检测报告上链"
-      :data="getReportPreviewData()"
-      :data-labels="{
-        productName: '产品名称',
-        traceCode: '溯源码',
-        result: '检测结果',
-        itemsCount: '检测项目'
-      }"
-      @confirm="onReportConfirm"
-    >
-      <template #extra>
-        <div class="result-preview" :class="inspectForm.result">
-          <el-icon v-if="inspectForm.result === 'pass'"><CircleCheck /></el-icon>
-          <el-icon v-else><CircleClose /></el-icon>
-          <span>{{ inspectForm.result === 'pass' ? '检测合格，产品将流转至销售环节' : '检测不合格' }}</span>
-        </div>
+    <!-- 完成检测对话框 -->
+    <el-dialog v-model="inspectVisible" title="完成检测" width="600px">
+      <el-form :model="inspectForm" label-width="100px">
+        <el-form-item label="产品名称">
+          <span>{{ inspectForm.productName }}</span>
+          <span class="form-hint">({{ inspectForm.traceCode }})</span>
+        </el-form-item>
+        <el-form-item label="检测结果" required>
+          <el-radio-group v-model="inspectForm.qualified">
+            <el-radio :label="true">合格</el-radio>
+            <el-radio :label="false">不合格</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="质量等级" required>
+          <el-radio-group v-model="inspectForm.qualityGrade">
+            <el-radio label="A">A级</el-radio>
+            <el-radio label="B">B级</el-radio>
+            <el-radio label="C">C级</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="检测结果描述" required>
+          <el-input
+            v-model="inspectForm.inspectResult"
+            type="textarea"
+            :rows="3"
+            placeholder="请详细描述检测结果"
+          />
+        </el-form-item>
+        <el-form-item v-if="!inspectForm.qualified" label="存在问题">
+          <el-input
+            v-model="inspectForm.issues"
+            type="textarea"
+            :rows="2"
+            placeholder="请描述发现的问题"
+          />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="inspectForm.notes"
+            type="textarea"
+            :rows="2"
+            placeholder="可选填写备注"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="inspectVisible = false">取消</el-button>
+        <el-button type="primary" @click="onInspectConfirm">
+          <el-icon><DocumentChecked /></el-icon>
+          下一步
+        </el-button>
       </template>
-    </ChainConfirm>
+    </el-dialog>
 
-    <!-- 退回/终止对话框 -->
-    <RejectDialog
-      v-model:visible="rejectDialogVisible"
-      :product-name="rejectingChain?.productName"
-      :trace-code="rejectingChain?.traceCode"
-      @submit="handleReject"
+    <!-- 开始检测确认弹窗 -->
+    <ChainConfirm
+      v-model:visible="startInspectVisible"
+      title="确认开始检测"
+      :data="{
+        product: startInspectForm.product?.name || '',
+        inspectType: inspectTypeMap[startInspectForm.inspectType] || '质量检测',
+        notes: startInspectForm.notes || '无'
+      }"
+      :data-labels="{
+        product: '产品名称',
+        inspectType: '检测类型',
+        notes: '备注'
+      }"
+      :loading="false"
+      @confirm="onStartInspectConfirm"
+      ref="startInspectRef"
+    />
+
+    <!-- 完成检测上链确认弹窗 -->
+    <ChainConfirm
+      v-model:visible="inspectConfirmVisible"
+      title="确认上链"
+      :data="{
+        product: inspectForm.productName || '',
+        qualified: inspectForm.qualified ? '合格' : '不合格',
+        qualityGrade: `${inspectForm.qualityGrade}级`,
+        inspectResult: inspectForm.inspectResult,
+        issues: inspectForm.issues || '无'
+      }"
+      :data-labels="{
+        product: '产品名称',
+        qualified: '检测结果',
+        qualityGrade: '质量等级',
+        inspectResult: '检测描述',
+        issues: '存在问题'
+      }"
+      :loading="false"
+      @confirm="onInspectChainConfirm"
+      ref="inspectRef"
     />
 
     <!-- 详情抽屉 -->
     <el-drawer
       v-model="detailDrawerVisible"
-      title="检测详情"
-      size="550px"
+      title="产品详情"
+      size="500px"
     >
-      <template v-if="detailChain">
+      <template v-if="detailProduct">
         <!-- 溯源码 -->
         <div class="detail-section">
-          <TraceCode :trace-code="detailChain.traceCode" size="large" />
+          <TraceCode :code="detailProduct.trace_code" size="large" />
         </div>
 
-        <!-- 产品信息 -->
+        <!-- 基本信息 -->
         <div class="detail-section">
-          <h4>产品信息</h4>
+          <h4>基本信息</h4>
           <el-descriptions :column="1" border>
             <el-descriptions-item label="产品名称">
-              {{ getProcessInfo(detailChain).outputProduct || detailChain.productName }}
+              {{ detailProduct.name }}
             </el-descriptions-item>
-            <el-descriptions-item label="原材料">
-              {{ detailChain.productName }}
+            <el-descriptions-item label="溯源码">
+              {{ detailProduct.trace_code }}
             </el-descriptions-item>
-            <el-descriptions-item label="送检单位">
-              {{ detailChain.records.find(r => r.action === 'process')?.operator?.name || '-' }}
+            <el-descriptions-item label="数量">
+              {{ detailProduct.quantity }} {{ detailProduct.unit || 'kg' }}
             </el-descriptions-item>
             <el-descriptions-item label="状态">
-              <el-tag :type="statusMap[getProductStatus(detailChain)]?.type">
-                {{ statusMap[getProductStatus(detailChain)]?.label }}
+              <el-tag :type="statusMap[detailProduct.status]?.type">
+                {{ statusMap[detailProduct.status]?.label }}
               </el-tag>
             </el-descriptions-item>
           </el-descriptions>
         </div>
 
-        <!-- 检测报告（如果已完成） -->
-        <div v-if="getInspectData(detailChain).result" class="detail-section">
-          <h4>检测报告</h4>
-          <div class="report-result" :class="getInspectData(detailChain).result">
-            <el-icon v-if="getInspectData(detailChain).result === 'pass'"><CircleCheck /></el-icon>
-            <el-icon v-else><CircleClose /></el-icon>
-            <span>{{ getInspectData(detailChain).result === 'pass' ? '检测合格' : '检测不合格' }}</span>
-          </div>
-
-          <el-table :data="getInspectData(detailChain).items" border size="small" class="report-table">
-            <el-table-column prop="name" label="检测项" width="120" />
-            <el-table-column prop="value" label="检测值" />
-            <el-table-column prop="standard" label="标准值" />
-            <el-table-column label="结果" width="80">
-              <template #default="{ row }">
-                <el-tag :type="row.pass ? 'success' : 'danger'" size="small">
-                  {{ row.pass ? '合格' : '不合格' }}
-                </el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-
-          <div v-if="getInspectData(detailChain).notes" class="report-notes">
-            备注：{{ getInspectData(detailChain).notes }}
-          </div>
-        </div>
-
         <!-- 链上记录 -->
         <div class="detail-section">
-          <h4>链上记录</h4>
-          <el-timeline>
+          <div class="section-header">
+            <h4>
+              链上记录
+              <el-tag v-if="detailRecords.some(r => r.action === 'amend')" type="warning" size="small">
+                有修正记录
+              </el-tag>
+            </h4>
+            <el-button
+              v-if="detailRecords.length > 0"
+              type="primary"
+              link
+              size="small"
+              @click="viewChainData(detailProduct)"
+            >
+              <el-icon><Connection /></el-icon>
+              查看链信息
+            </el-button>
+          </div>
+          <div v-if="detailLoading" class="loading-records">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            加载中...
+          </div>
+          <el-timeline v-else>
             <el-timeline-item
-              v-for="record in detailChain.records"
+              v-for="record in detailRecords"
               :key="record.id"
-              :timestamp="formatTime(record.timestamp)"
-              :type="record.action === 'amend' ? 'warning' : record.action === 'reject' || record.action === 'terminate' ? 'danger' : 'primary'"
+              :timestamp="formatTime(record.timestamp || record.created_at)"
+              :type="record.action === 'amend' ? 'warning' : 'primary'"
             >
               <div class="record-item">
                 <div class="record-header">
                   <span class="action">{{ getActionLabel(record.action) }}</span>
-                  <span class="operator">{{ record.operator?.name }}</span>
+                  <span class="operator">{{ record.operator_name }}</span>
                 </div>
-                <div v-if="record.txHash" class="record-hash">
-                  <el-icon><Link /></el-icon>
-                  {{ record.txHash.slice(0, 10) }}...{{ record.txHash.slice(-8) }}
+                <div v-if="record.remark" class="record-remark">
+                  {{ record.remark }}
+                </div>
+                <div v-if="record.tx_hash" class="chain-info-box" @click="openChainVerify(record)">
+                  <div class="chain-badge">
+                    <el-icon><Connection /></el-icon>
+                    <span>FISCO BCOS</span>
+                  </div>
+                  <div class="chain-details">
+                    <div class="chain-row">
+                      <span class="chain-label">交易哈希</span>
+                      <span class="chain-value">{{ record.tx_hash.slice(0, 10) }}...{{ record.tx_hash.slice(-8) }}</span>
+                    </div>
+                    <div v-if="record.block_number" class="chain-row">
+                      <span class="chain-label">区块高度</span>
+                      <span class="chain-value">#{{ record.block_number }}</span>
+                    </div>
+                  </div>
+                  <div class="verify-btn">
+                    <el-icon><View /></el-icon>
+                    <span>验证</span>
+                  </div>
                 </div>
               </div>
             </el-timeline-item>
@@ -609,36 +613,62 @@ const getActionLabel = (action) => {
         </div>
       </template>
     </el-drawer>
+
+    <!-- 链上数据弹窗 -->
+    <ChainVerify
+      v-model:visible="chainVerifyVisible"
+      :trace-code="verifyTraceCode"
+    />
   </div>
 </template>
 
 <style scoped>
-.pending-container {
+.inspector-container {
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
 
-.card-header {
+.page-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.title {
+.page-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
 }
 
-.inspect-tabs {
-  margin-bottom: 16px;
+.page-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.inspector-card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.card-header {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.inspector-tabs {
+  margin-top: 16px;
 }
 
 .tab-badge {
-  margin-left: 6px;
+  margin-left: 8px;
 }
 
 .product-info {
@@ -650,10 +680,12 @@ const getActionLabel = (action) => {
 .product-info .info {
   display: flex;
   flex-direction: column;
+  gap: 4px;
 }
 
 .product-info .name {
   font-weight: 500;
+  color: var(--text-primary);
 }
 
 .product-info .code {
@@ -662,35 +694,17 @@ const getActionLabel = (action) => {
   font-family: monospace;
 }
 
-/* 结果预览 */
-.result-preview {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 12px;
-  padding: 16px;
-  border-radius: 8px;
-  font-size: 14px;
+.product-info .process-info {
+  font-size: 12px;
+  color: var(--primary-color);
+}
+
+.quantity {
   font-weight: 500;
+  color: var(--text-primary);
 }
 
-.result-preview.pass {
-  background: #f6ffed;
-  color: #389e0d;
-  border: 1px solid #b7eb8f;
-}
-
-.result-preview.fail {
-  background: #fff1f0;
-  color: #cf1322;
-  border: 1px solid #ffa39e;
-}
-
-.result-preview .el-icon {
-  font-size: 20px;
-}
-
-/* 详情抽屉样式 */
+/* 详情相关样式 */
 .detail-section {
   margin-bottom: 24px;
 }
@@ -699,43 +713,32 @@ const getActionLabel = (action) => {
   font-size: 14px;
   color: var(--text-primary);
   margin-bottom: 12px;
-}
-
-.report-result {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 16px;
-  border-radius: 8px;
-  margin-bottom: 16px;
-  font-size: 16px;
-  font-weight: 600;
+  gap: 8px;
 }
 
-.report-result.pass {
-  background: #f6ffed;
-  color: #389e0d;
-}
-
-.report-result.fail {
-  background: #fff1f0;
-  color: #cf1322;
-}
-
-.report-result .el-icon {
-  font-size: 24px;
-}
-
-.report-table {
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 12px;
 }
 
-.report-notes {
-  padding: 12px;
-  background: var(--bg-color);
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--text-secondary);
+.section-header h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.loading-records {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 0;
+  color: var(--text-muted);
 }
 
 .record-item {
@@ -758,12 +761,95 @@ const getActionLabel = (action) => {
   font-size: 13px;
 }
 
-.record-hash {
-  font-size: 12px;
-  color: var(--text-muted);
-  font-family: monospace;
+.record-remark {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 链上信息卡片 */
+.chain-info-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08));
+  border: 1px solid rgba(102, 126, 234, 0.2);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.chain-info-box:hover {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.15));
+  border-color: rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+}
+
+.chain-badge {
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 4px 10px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chain-badge .el-icon {
+  font-size: 12px;
+}
+
+.chain-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chain-label {
+  color: var(--text-muted);
+}
+
+.chain-value {
+  color: #667eea;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.verify-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.chain-info-box:hover .verify-btn {
+  background: #667eea;
+  color: white;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 8px;
 }
 </style>
