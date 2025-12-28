@@ -1,35 +1,77 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { useProductStore } from '../../store/product'
 import { blockchainApi } from '../../api/blockchain'
 
 const router = useRouter()
-const productStore = useProductStore()
 const traceCode = ref('')
 const showCamera = ref(false)
 const showUpload = ref(false)
 const searching = ref(false)
 const ocrProcessing = ref(false)
 
-// 已售产品（消费者可查询的产品）
-const queryableProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.traceCode
-  ).slice(0, 5) // 只显示最近5个
-})
+// 已上架产品列表（从真实 API 获取）
+const onChainProducts = ref([])
+const loadingProducts = ref(false)
 
-// 获取产品显示名称
-const getProductName = (chain) => {
-  const processRecord = chain.records.find(r => r.action === 'process')
-  return processRecord?.data?.outputProduct || chain.productName
+// 加载已上架产品列表
+const loadOnChainProducts = async () => {
+  loadingProducts.value = true
+  try {
+    const products = await blockchainApi.getOnChainProducts(5, 0)
+    onChainProducts.value = products
+  } catch (error) {
+    console.error('获取产品列表失败:', error)
+    onChainProducts.value = []
+  } finally {
+    loadingProducts.value = false
+  }
 }
 
-// 获取产地信息
-const getOrigin = (chain) => {
-  return productStore.getMergedData(chain)?.origin || '-'
+// 页面加载时获取产品列表
+onMounted(() => {
+  loadOnChainProducts()
+})
+
+// 获取产品 emoji 图标
+const getProductEmoji = (name, category) => {
+  const n = (name + ' ' + (category || '')).toLowerCase()
+  if (n.includes('苹果') || n.includes('果')) return '🍎'
+  if (n.includes('石榴')) return '🌰'
+  if (n.includes('橙') || n.includes('橘')) return '🍊'
+  if (n.includes('香蕉')) return '🍌'
+  if (n.includes('葡萄')) return '🍇'
+  if (n.includes('西瓜')) return '🍉'
+  if (n.includes('番茄') || n.includes('茄')) return '🍅'
+  if (n.includes('胡萝卜')) return '🥕'
+  if (n.includes('玉米')) return '🌽'
+  if (n.includes('菜') || n.includes('芹')) return '🥬'
+  if (n.includes('蛋')) return '🥚'
+  if (n.includes('奶') || n.includes('牛')) return '🥛'
+  if (n.includes('麦') || n.includes('米') || n.includes('粮')) return '🌾'
+  if (n.includes('鱼')) return '🐟'
+  if (n.includes('肉')) return '🥩'
+  return '📦'
+}
+
+// 获取阶段名称
+const getStageName = (stage) => {
+  const stageNames = {
+    0: '原料种植',
+    1: '加工生产',
+    2: '质量检测',
+    3: '销售',
+    4: '已售出'
+  }
+  return stageNames[stage] || '未知阶段'
+}
+
+// 格式化时间
+const formatTime = (timestamp) => {
+  if (!timestamp) return '-'
+  const date = new Date(timestamp * 1000)
+  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
 // 搜索溯源 - 调用真实 API
@@ -137,9 +179,7 @@ const performOCR = async () => {
 
   // 模拟识别结果 - 实际项目中接入OCR API
   // 这里随机返回一个存在的溯源码
-  const existingCodes = productStore.productChains
-    .filter(c => c.traceCode)
-    .map(c => c.traceCode)
+  const existingCodes = onChainProducts.value.map(p => p.trace_code)
 
   if (existingCodes.length > 0) {
     recognizedCode.value = existingCodes[Math.floor(Math.random() * existingCodes.length)]
@@ -221,33 +261,33 @@ const useRecognizedCode = () => {
         </div>
       </template>
 
-      <div v-if="queryableProducts.length > 0" class="product-grid">
+      <div v-if="onChainProducts.length > 0" class="product-grid">
         <div
-          v-for="chain in queryableProducts"
-          :key="chain.id"
+          v-for="product in onChainProducts"
+          :key="product.trace_code"
           class="product-item"
-          @click="quickTrace(chain.traceCode)"
+          @click="quickTrace(product.trace_code)"
         >
           <div class="product-icon">
-            <el-icon :size="28"><GoodsFilled /></el-icon>
+            <span class="product-emoji">{{ getProductEmoji(product.name, product.category) }}</span>
           </div>
           <div class="product-info">
-            <span class="product-name">{{ getProductName(chain) }}</span>
-            <span class="product-origin">{{ getOrigin(chain) }}</span>
-            <el-tag size="small" effect="plain" class="trace-tag">{{ chain.traceCode }}</el-tag>
+            <span class="product-name">{{ product.name }}</span>
+            <span class="product-meta">{{ product.origin }} · {{ getStageName(product.current_stage) }}</span>
+            <el-tag size="small" effect="plain" class="trace-tag">{{ product.trace_code }}</el-tag>
           </div>
           <div class="product-actions">
-            <el-button type="primary" text size="small" @click.stop="quickTrace(chain.traceCode)">
-              查看简报
-            </el-button>
-            <el-button text size="small" @click.stop="viewFullTrace(chain.traceCode)">
-              完整记录
+            <el-button type="primary" text size="small" @click.stop="quickTrace(product.trace_code)">
+              查看详情
             </el-button>
           </div>
         </div>
       </div>
 
-      <el-empty v-else description="暂无可查询的产品" />
+      <el-empty v-if="!loadingProducts && onChainProducts.length === 0" description="暂无可查询的产品" />
+      <div v-if="loadingProducts" class="loading-wrapper">
+        <el-skeleton :rows="2" animated />
+      </div>
     </el-card>
 
     <!-- 使用说明 -->
@@ -492,6 +532,10 @@ const useRecognizedCode = () => {
   flex-shrink: 0;
 }
 
+.product-emoji {
+  font-size: 28px;
+}
+
 .product-info {
   flex: 1;
   display: flex;
@@ -510,6 +554,11 @@ const useRecognizedCode = () => {
   color: var(--text-muted);
 }
 
+.product-meta {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .trace-tag {
   width: fit-content;
   font-family: monospace;
@@ -519,6 +568,10 @@ const useRecognizedCode = () => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.loading-wrapper {
+  padding: 16px 0;
 }
 
 /* 帮助卡片 */

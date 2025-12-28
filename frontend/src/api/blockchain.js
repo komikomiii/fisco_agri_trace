@@ -31,6 +31,13 @@ export const blockchainApi = {
     })
   },
 
+  // 获取已上架产品列表
+  getOnChainProducts(limit = 10, offset = 0) {
+    return api.get('/blockchain/products', {
+      params: { limit, offset }
+    })
+  },
+
   // 检查区块链健康状态
   getHealth() {
     return api.get('/blockchain/health')

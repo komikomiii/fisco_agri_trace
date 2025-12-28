@@ -2,10 +2,14 @@
 Blockchain API - 区块链查询接口
 """
 from fastapi import APIRouter, HTTPException
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 from app.blockchain import blockchain_client
+from app.database import get_db
+from app.models.product import Product, ProductStatus
+from app.models.user import User
+from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/blockchain", tags=["区块链"])
 
@@ -47,6 +51,18 @@ class VerifyResponse(BaseModel):
     product_info: Optional[dict] = None
 
 
+class ProductListItem(BaseModel):
+    """产品列表项"""
+    trace_code: str
+    name: str
+    category: str
+    origin: str
+    quantity: float
+    unit: str
+    created_at: int
+    current_stage: int
+
+
 @router.get("/info", response_model=ChainInfoResponse)
 async def get_chain_info():
     """
@@ -60,6 +76,63 @@ async def get_chain_info():
         return ChainInfoResponse(**info)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取链信息失败: {str(e)}")
+
+
+@router.get("/products", response_model=List[ProductListItem])
+async def get_on_chain_products(limit: int = 10, offset: int = 0):
+    """
+    获取已上架的产品列表
+
+    参数:
+    - limit: 返回数量限制，默认10条
+    - offset: 偏移量，默认0
+
+    返回最近创建的产品列表（按创建时间降序）
+    """
+    db = next(get_db())
+
+    try:
+        # 查询已上架的产品
+        products = db.query(Product).filter(
+            Product.status == ProductStatus.ON_CHAIN
+        ).order_by(
+            Product.created_at.desc()
+        ).limit(limit).offset(offset).all()
+
+        result = []
+        for product in products:
+            # 获取 current_stage 的值，处理枚举类型
+            stage_value = 0
+            if product.current_stage is not None:
+                # ProductStage 是字符串枚举，直接获取值并映射
+                stage_str = str(product.current_stage)
+                stage_map = {
+                    'producer': 0,
+                    'processor': 1,
+                    'inspector': 2,
+                    'seller': 3,
+                    'sold': 4
+                }
+                stage_value = stage_map.get(stage_str, 0)
+
+            result.append(ProductListItem(
+                trace_code=product.trace_code,
+                name=product.name or "未知产品",
+                category=product.category or "",
+                origin=product.origin or "",
+                quantity=float(product.quantity or 0),
+                unit=product.unit or "",
+                created_at=int(product.created_at.timestamp()),
+                current_stage=stage_value
+            ))
+
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"获取产品列表失败: {str(e)}")
+    finally:
+        db.close()
 
 
 @router.get("/transaction/{tx_hash}")

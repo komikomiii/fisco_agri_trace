@@ -31,10 +31,8 @@ const selectedChainRecord = ref(null)
 
 // 打开链上数据详情弹窗
 const openChainDataDialog = (record) => {
-  console.log('Opening chain data dialog for record:', record)
   selectedChainRecord.value = record
   chainDataDialogVisible.value = true
-  console.log('Dialog visible:', chainDataDialogVisible.value)
 }
 
 // 关闭弹窗
@@ -55,16 +53,10 @@ const copyToClipboard = async (text) => {
 
 // 获取原始链上记录数据
 const getRawChainRecord = (record) => {
-  console.log('getRawChainRecord called with:', record)
-  console.log('traceData.value?.chain_records:', traceData.value?.chain_records)
   if (!traceData.value?.chain_records) return null
-  const found = traceData.value.chain_records.find(r => {
-    const match = (r.recordId || r.index) === record.id
-    console.log(`Comparing ${r.recordId || r.index} with ${record.id}:`, match)
-    return match
-  })
-  console.log('Found record:', found)
-  return found
+  return traceData.value.chain_records.find(r =>
+    (r.recordId || r.index) === record.id
+  )
 }
 
 // 格式化 data JSON 数据
