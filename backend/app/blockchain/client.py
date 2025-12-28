@@ -135,10 +135,17 @@ class FiscoBcosClient:
         success, stdout, stderr = self._run_console_command(command)
 
         if not success:
-            print(f"Console error: {stderr}")
+            print(f"Console command failed!")
+            print(f"STDERR: {stderr}")
+            print(f"STDOUT: {stdout}")
             return False, None, None
 
         parsed = self._parse_console_output(stdout)
+
+        if not parsed["success"]:
+            print(f"Failed to parse console output")
+            print(f"STDOUT: {stdout}")
+            return False, None, None
 
         # 如果成功，获取区块号
         if parsed["success"] and parsed["tx_hash"]:

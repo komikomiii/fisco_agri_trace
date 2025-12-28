@@ -53,5 +53,10 @@
     "username": "test_user_1766908921",
     "address": "0x00569913de5C024e2682d00699402739E8d1741E",
     "keystore": "/home/pdm/DEV/komi-project/keystore/user_11.json"
+  },
+  "0": {
+    "username": "system",
+    "address": "0x945011D94F5A49B71d0993EC665bc9BC477A422b",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_0.json"
   }
 }
