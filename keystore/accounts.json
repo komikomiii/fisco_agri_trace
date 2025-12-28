@@ -1,0 +1,37 @@
+{
+  "1": {
+    "username": "producer",
+    "address": "0x3d6Cc42a2Af2f5aE13d6fB1423bC09F387d35Edc",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_1.json"
+  },
+  "2": {
+    "username": "processor",
+    "address": "0x47F466adbC9167735eD36B7c5D38dc8993E40F85",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_2.json"
+  },
+  "3": {
+    "username": "inspector",
+    "address": "0xd6ea116dc83890e38B162e574d455e47BC92f510",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_3.json"
+  },
+  "4": {
+    "username": "seller",
+    "address": "0x02f57d90a01560912837109F126ECAA5B0FFC3b2",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_4.json"
+  },
+  "5": {
+    "username": "consumer",
+    "address": "0x4196259f89FaAeC319445C3376B1244D5639d4c6",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_5.json"
+  },
+  "6": {
+    "username": "果农1",
+    "address": "0xc0373125f10Eb89FABef6066c5dD13d83C0B5270",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_6.json"
+  },
+  "7": {
+    "username": "加工1",
+    "address": "0xe39897Cb0606d012F6101623829E547F8EB022FE",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_7.json"
+  }
+}

@@ -37,6 +37,7 @@ class UserResponse(BaseModel):
     real_name: Optional[str]
     phone: Optional[str]
     company: Optional[str]
+    blockchain_address: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -99,7 +100,7 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     if existing_user:
         raise HTTPException(status_code=400, detail="用户名已存在")
 
-    # 创建用户
+    # 创建用户（先不设置地址）
     user = User(
         username=user_data.username,
         password_hash=get_password_hash(user_data.password),
@@ -111,6 +112,16 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    # 为用户生成区块链地址
+    from app.blockchain.wallet import wallet_manager
+    account = wallet_manager.ensure_user_account(user.id, user_data.username)
+
+    # 更新用户的区块链地址
+    user.blockchain_address = account["address"]
+    db.commit()
+    db.refresh(user)
+
     return user
 
 

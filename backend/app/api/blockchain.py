@@ -162,6 +162,7 @@ async def get_product_chain_data(trace_code: str):
     """
     from app.database import get_db
     from app.models.product import Product, ProductRecord
+    from app.models.user import User
     from sqlalchemy.orm import Session
 
     # 获取数据库会话
@@ -177,6 +178,10 @@ async def get_product_chain_data(trace_code: str):
             if not product:
                 raise HTTPException(status_code=404, detail="溯源码不存在")
 
+            # 获取创建者和持有者的真实地址
+            creator = db.query(User).filter(User.id == product.creator_id).first()
+            holder = db.query(User).filter(User.id == product.current_holder_id).first()
+
             product_info = {
                 "name": product.name or "",
                 "category": product.category or "",
@@ -185,8 +190,8 @@ async def get_product_chain_data(trace_code: str):
                 "unit": product.unit or "",
                 "currentStage": product.current_stage.value if product.current_stage else 0,
                 "status": product.status.value if product.status else 0,
-                "creator": "0x0000000000000000000000000000000000000000",  # 数据库中没有地址信息
-                "currentHolder": "0x0000000000000000000000000000000000000000",
+                "creator": creator.blockchain_address if creator and creator.blockchain_address else "0x0000000000000000000000000000000000000000",
+                "currentHolder": holder.blockchain_address if holder and holder.blockchain_address else "0x0000000000000000000000000000000000000000",
                 "createdAt": int(product.created_at.timestamp()),
                 "recordCountNum": db.query(ProductRecord).filter(ProductRecord.product_id == product.id).count()
             }
@@ -204,6 +209,10 @@ async def get_product_chain_data(trace_code: str):
 
                 records = []
                 for i, record in enumerate(db_records):
+                    # 获取操作者的真实地址
+                    operator = db.query(User).filter(User.id == record.operator_id).first()
+                    operator_address = operator.blockchain_address if operator and operator.blockchain_address else "0x0000000000000000000000000000000000000000"
+
                     records.append({
                         "index": i,
                         "recordId": record.id,
@@ -211,7 +220,7 @@ async def get_product_chain_data(trace_code: str):
                         "action": record.action.value if record.action else 0,
                         "data": record.data or "",
                         "remark": record.remark or "",
-                        "operator": "0x0000000000000000000000000000000000000000",
+                        "operator": operator_address,
                         "operatorName": record.operator_name or "",
                         "timestamp": int(record.created_at.timestamp()),
                         "previousRecordId": record.previous_record_id or 0,

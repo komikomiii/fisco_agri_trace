@@ -126,6 +126,9 @@ const handleLogout = () => {
             <div v-if="!isCollapse" class="user-info">
               <span class="user-name">{{ userStore.user?.name }}</span>
               <span class="user-role">{{ userStore.user?.roleName }}</span>
+              <span v-if="userStore.user?.blockchainAddress" class="user-address">
+                {{ userStore.user?.blockchainAddress?.slice(0, 8) }}...{{ userStore.user?.blockchainAddress?.slice(-6) }}
+              </span>
             </div>
           </transition>
         </div>
@@ -173,8 +176,24 @@ const handleLogout = () => {
             </div>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item :icon="User">个人中心</el-dropdown-item>
-                <el-dropdown-item :icon="Setting">系统设置</el-dropdown-item>
+                <el-dropdown-item :icon="User" disabled>
+                  <div class="user-dropdown-info">
+                    <span class="user-dropdown-label">用户名</span>
+                    <span class="user-dropdown-value">{{ userStore.user?.name }}</span>
+                  </div>
+                </el-dropdown-item>
+                <el-dropdown-item :icon="User" disabled>
+                  <div class="user-dropdown-info">
+                    <span class="user-dropdown-label">角色</span>
+                    <span class="user-dropdown-value">{{ userStore.user?.roleName }}</span>
+                  </div>
+                </el-dropdown-item>
+                <el-dropdown-item v-if="userStore.user?.blockchainAddress" :icon="Wallet" disabled>
+                  <div class="user-dropdown-info">
+                    <span class="user-dropdown-label">区块链地址</span>
+                    <span class="user-dropdown-address">{{ userStore.user?.blockchainAddress }}</span>
+                  </div>
+                </el-dropdown-item>
                 <el-dropdown-item divided :icon="SwitchButton" @click="handleLogout">
                   退出登录
                 </el-dropdown-item>
@@ -296,6 +315,14 @@ const handleLogout = () => {
   color: var(--text-muted);
 }
 
+.user-address {
+  font-size: 11px;
+  color: var(--primary-color);
+  font-family: 'Courier New', monospace;
+  margin-top: 4px;
+  opacity: 0.8;
+}
+
 /* 顶部导航 */
 .layout-header {
   height: 64px;
@@ -363,6 +390,33 @@ const handleLogout = () => {
 .user-dropdown-name {
   font-size: 14px;
   color: var(--text-primary);
+}
+
+/* 下拉菜单用户信息 */
+.user-dropdown-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.user-dropdown-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.user-dropdown-value {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.user-dropdown-address {
+  font-size: 12px;
+  color: var(--primary-color);
+  font-family: 'Courier New', monospace;
+  word-break: break-all;
+  line-height: 1.4;
 }
 
 /* 内容区 */

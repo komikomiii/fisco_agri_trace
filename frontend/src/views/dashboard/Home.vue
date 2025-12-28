@@ -3,10 +3,22 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../../store/user'
 import { useProductStore } from '../../store/product'
+import { ElMessage } from 'element-plus'
 
 const router = useRouter()
 const userStore = useUserStore()
 const productStore = useProductStore()
+
+// 复制区块链地址
+const copyAddress = () => {
+  if (userStore.user?.blockchainAddress) {
+    navigator.clipboard.writeText(userStore.user.blockchainAddress).then(() => {
+      ElMessage.success('地址已复制到剪贴板')
+    }).catch(() => {
+      ElMessage.error('复制失败，请手动复制')
+    })
+  }
+}
 
 // 模拟统计数据
 const stats = ref({
@@ -245,6 +257,19 @@ const bottomCardInfo = computed(() => {
       <div class="welcome-text">
         <h1>{{ greetingText }}，{{ userStore.user?.name }} !</h1>
         <p>欢迎使用农产品溯源平台，这是您今天的工作概览</p>
+        <div v-if="userStore.user?.blockchainAddress" class="blockchain-address-display">
+          <el-icon><Wallet /></el-icon>
+          <span class="address-label">区块链地址：</span>
+          <span class="address-value">{{ userStore.user?.blockchainAddress }}</span>
+          <el-button
+            text
+            size="small"
+            @click="copyAddress"
+            class="copy-btn"
+          >
+            <el-icon><DocumentCopy /></el-icon>
+          </el-button>
+        </div>
       </div>
       <div class="welcome-date">
         <el-icon :size="20"><Calendar /></el-icon>
@@ -431,6 +456,48 @@ const bottomCardInfo = computed(() => {
 .welcome-text p {
   color: var(--text-muted);
   font-size: 14px;
+}
+
+/* 区块链地址显示 */
+.blockchain-address-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(45, 184, 77, 0.08), rgba(45, 184, 77, 0.03));
+  border: 1px solid rgba(45, 184, 77, 0.2);
+  border-radius: 10px;
+  max-width: 600px;
+}
+
+.blockchain-address-display .el-icon {
+  color: var(--primary-color);
+  font-size: 18px;
+}
+
+.address-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.address-value {
+  flex: 1;
+  font-size: 12px;
+  color: var(--primary-color);
+  font-family: 'Courier New', monospace;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.copy-btn {
+  padding: 4px 8px;
+  color: var(--primary-color);
+}
+
+.copy-btn:hover {
+  background: rgba(45, 184, 77, 0.1);
 }
 
 .welcome-date {

@@ -38,7 +38,8 @@ export const useUserStore = defineStore('user', () => {
         const userData = {
           ...response.user,
           name: response.user.real_name || response.user.username,
-          roleName: roleNameMap[response.user.role] || response.user.role
+          roleName: roleNameMap[response.user.role] || response.user.role,
+          blockchainAddress: response.user.blockchain_address || null
         }
         user.value = userData
         token.value = response.access_token

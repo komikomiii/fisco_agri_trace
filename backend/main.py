@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.database import engine, Base, SessionLocal
-from app.api import auth, producer, blockchain
+from app.api import auth, producer, blockchain, processor
 from app.models.user import User, UserRole
 from passlib.context import CryptContext
 
@@ -84,6 +84,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(producer.router, prefix="/api")
 app.include_router(blockchain.router, prefix="/api")
+app.include_router(processor.router, prefix="/api")
 
 
 @app.get("/")

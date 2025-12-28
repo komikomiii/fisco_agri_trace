@@ -220,6 +220,52 @@ class FiscoBcosClient:
 
         return False, None, None
 
+    def transfer_product(
+        self,
+        trace_code: str,
+        new_holder: str,
+        new_stage: str,
+        data: str,
+        remark: str,
+        operator_name: str
+    ) -> Tuple[bool, Optional[str], Optional[int]]:
+        """
+        转移产品到下一阶段
+        返回: (成功标志, 交易哈希, 区块号)
+        """
+        escaped_data = data.replace('"', '\\"')
+        escaped_remark = remark.replace('"', '\\"')
+
+        # Stage 映射: 字符串 -> 整数
+        stage_map = {
+            "producer": 0,
+            "processor": 1,
+            "inspector": 2,
+            "seller": 3,
+            "sold": 4
+        }
+
+        stage_int = stage_map.get(new_stage, 1)  # 默认为加工商阶段
+
+        command = (
+            f'call AgriTrace {self.contract_address} transferProduct '
+            f'"{trace_code}" "{new_holder}" {stage_int} "{escaped_data}" "{escaped_remark}" "{operator_name}"'
+        )
+
+        success, stdout, stderr = self._run_console_command(command)
+
+        if not success:
+            print(f"Console error: {stderr}")
+            return False, None, None
+
+        parsed = self._parse_console_output(stdout)
+
+        if parsed["success"] and parsed["tx_hash"]:
+            block_number = self.get_block_number()
+            return True, parsed["tx_hash"], block_number
+
+        return False, None, None
+
     def _call_contract_rpc(self, function_signature: str, input_types: List[str], input_values: List[Any], output_types: List[str]) -> Optional[List[Any]]:
         """
         通过 RPC 调用合约 (view 函数)

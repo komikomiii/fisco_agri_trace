@@ -1,45 +1,36 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useProductStore } from '../../store/product'
 import { useUserStore } from '../../store/user'
 import { useNotificationStore } from '../../store/notification'
 import ChainConfirm from '../../components/common/ChainConfirm.vue'
 import TraceCode from '../../components/common/TraceCode.vue'
+import * as processorApi from '../../api/processor'
 
-const productStore = useProductStore()
 const userStore = useUserStore()
 const notificationStore = useNotificationStore()
 
 // Tab 切换
 const activeTab = ref('pool')
 
-// 公共池中的产品（池子自选）
+// 产品数据
+const availableProducts = ref([])
+const receivedProductsData = ref([])
+const loading = ref(false)
+
+// 公共池中的产品（所有可接收的产品）
 const poolProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'producer' &&
-    c.distribution?.type === 'pool'
-  )
+  return availableProducts.value
 })
 
-// 指定给当前加工商的产品
+// 指定给当前加工商的产品 (暂未实现，返回空)
 const assignedProducts = computed(() => {
-  const currentUserId = userStore.user?.id || 2
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'producer' &&
-    c.distribution?.type === 'assigned' &&
-    c.distribution?.assignedTo?.id === currentUserId
-  )
+  return []
 })
 
 // 已接收的产品（在加工商阶段）
 const receivedProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'processor'
-  )
+  return receivedProductsData.value
 })
 
 // 当前显示的列表
@@ -66,21 +57,20 @@ const receiveForm = ref({
   notes: ''
 })
 
-const openReceiveDialog = (chain) => {
-  const data = productStore.getMergedData(chain)
+const openReceiveDialog = (product) => {
   receiveForm.value = {
-    receivedQuantity: data.quantity || 0,
+    receivedQuantity: product.quantity || 0,
     quality: 'A',
     notes: ''
   }
   pendingReceive.value = {
-    chain,
+    product,
     data: {
-      productName: chain.productName,
-      traceCode: chain.traceCode,
-      origin: data.origin,
-      quantity: `${data.quantity} ${data.unit}`,
-      supplier: chain.records[0]?.operator?.name || '-'
+      productName: product.name,
+      traceCode: product.trace_code,
+      origin: product.origin,
+      quantity: `${product.quantity} ${product.unit}`,
+      supplier: product.creator_name || '-'
     },
     labels: {
       productName: '产品名称',
@@ -99,61 +89,62 @@ const onReceiveConfirm = async () => {
   chainConfirmRef.value?.setLoading()
 
   try {
-    // 添加接收记录到产品链
-    const result = await productStore.addRecord(pendingReceive.value.chain.id, {
-      stage: 'processor',
-      action: 'receive',
-      data: {
-        receivedQuantity: receiveForm.value.receivedQuantity,
+    // 调用后端 API 接收原料
+    const result = await processorApi.receiveProduct(
+      pendingReceive.value.product.id,
+      {
+        product_id: pendingReceive.value.product.id,
+        received_quantity: receiveForm.value.receivedQuantity,
         quality: receiveForm.value.quality,
         notes: receiveForm.value.notes
-      },
-      operator: {
-        id: userStore.user?.id || 2,
-        name: userStore.user?.name || '绿源加工厂',
-        role: 'processor'
       }
-    })
+    )
 
-    if (result) {
-      // 更新产品链当前阶段
-      pendingReceive.value.chain.currentStage = 'processor'
+    chainConfirmRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
 
-      chainConfirmRef.value?.setSuccess(result.txHash, result.blockNumber)
+    ElMessage.success('接收成功，产品已进入加工环节')
 
-      // 移除待处理通知
-      const notification = notificationStore.notifications.find(
-        n => n.relatedTraceCode === pendingReceive.value.chain.traceCode &&
-             n.type === notificationStore.NOTIFICATION_TYPES.PENDING
-      )
-      if (notification) {
-        notificationStore.markAsRead(notification.id)
-      }
-
-      ElMessage.success('接收成功，产品已进入加工环节')
-    } else {
-      chainConfirmRef.value?.setError('接收失败，请重试')
-    }
+    // 刷新列表
+    await fetchAvailableProducts()
+    await fetchReceivedProducts()
   } catch (error) {
-    chainConfirmRef.value?.setError(error.message || '接收失败')
+    chainConfirmRef.value?.setError(error.response?.data?.detail || '接收失败')
   }
 }
 
-// ==================== 溯源信息查看 ====================
-const traceDrawerVisible = ref(false)
-const traceChain = ref(null)
-
-const viewTrace = (chain) => {
-  traceChain.value = chain
-  traceDrawerVisible.value = true
+// 获取可接收的产品列表
+const fetchAvailableProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getAvailableProducts()
+    availableProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取可接收产品列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
-// 格式化时间
-const formatTime = (timestamp) => {
-  if (!timestamp) return '-'
-  return new Date(timestamp).toLocaleString('zh-CN')
+// 获取已接收的产品列表
+const fetchReceivedProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getReceivedProducts()
+    receivedProductsData.value = data
+  } catch (error) {
+    ElMessage.error('获取已接收产品列表失败')
+  } finally {
+    loading.value = false
+  }
 }
 
+// 页面加载时获取数据
+onMounted(() => {
+  fetchAvailableProducts()
+  fetchReceivedProducts()
+})
+
+// ==================== 辅助函数 ====================
 // 获取操作描述
 const getActionLabel = (action) => {
   const map = {
@@ -231,58 +222,45 @@ const getActionLabel = (action) => {
         以下原料由供应商指定发送给您
       </div>
 
-      <el-table :data="currentList" stripe>
-        <el-table-column prop="productName" label="产品名称" min-width="140">
+      <el-table :data="currentList" stripe v-loading="loading">
+        <el-table-column prop="name" label="产品名称" min-width="140">
           <template #default="{ row }">
             <div class="product-info">
               <el-avatar :size="36" shape="square" style="background: #1890ff">
-                {{ row.productName.charAt(0) }}
+                {{ row.name.charAt(0) }}
               </el-avatar>
               <div class="info">
-                <span class="name">{{ row.productName }}</span>
-                <span class="code">{{ row.traceCode }}</span>
+                <span class="name">{{ row.name }}</span>
+                <span class="code">{{ row.trace_code }}</span>
               </div>
             </div>
           </template>
         </el-table-column>
         <el-table-column label="供应商" width="120">
           <template #default="{ row }">
-            {{ row.records[0]?.operator?.name || '-' }}
+            {{ row.creator_name || '-' }}
           </template>
         </el-table-column>
         <el-table-column label="产地" min-width="120">
           <template #default="{ row }">
-            {{ productStore.getMergedData(row)?.origin || '-' }}
+            {{ row.origin || '-' }}
           </template>
         </el-table-column>
         <el-table-column label="数量" width="120">
           <template #default="{ row }">
             <span class="quantity">
-              {{ productStore.getMergedData(row)?.quantity || 0 }}
-              {{ productStore.getMergedData(row)?.unit || 'kg' }}
+              {{ row.quantity || 0 }}
+              {{ row.unit || 'kg' }}
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="分配类型" width="120" v-if="activeTab !== 'received'">
-          <template #default="{ row }">
-            <el-tag v-if="row.distribution?.type === 'pool'" type="info" size="small">
-              公共池
-            </el-tag>
-            <el-tag v-else type="warning" size="small">
-              指定发送
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100" v-if="activeTab === 'received'">
+        <el-table-column label="状态" width="100">
           <template #default>
-            <el-tag type="success">已接收</el-tag>
+            <el-tag type="success">已上链</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" text size="small" @click="viewTrace(row)">
-              溯源信息
-            </el-button>
             <el-button
               v-if="activeTab !== 'received'"
               type="success"
@@ -344,72 +322,6 @@ const getActionLabel = (action) => {
         </div>
       </template>
     </ChainConfirm>
-
-    <!-- 溯源信息抽屉 -->
-    <el-drawer
-      v-model="traceDrawerVisible"
-      title="溯源信息"
-      size="500px"
-    >
-      <template v-if="traceChain">
-        <!-- 溯源码 -->
-        <div class="detail-section">
-          <TraceCode :trace-code="traceChain.traceCode" size="large" />
-        </div>
-
-        <!-- 基本信息 -->
-        <div class="detail-section">
-          <h4>产品信息</h4>
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="产品名称">
-              {{ traceChain.productName }}
-            </el-descriptions-item>
-            <el-descriptions-item label="产品类别">
-              {{ traceChain.category }}
-            </el-descriptions-item>
-            <el-descriptions-item label="产地">
-              {{ productStore.getMergedData(traceChain)?.origin || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="种植日期">
-              {{ productStore.getMergedData(traceChain)?.plantDate || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="数量">
-              {{ productStore.getMergedData(traceChain)?.quantity }}
-              {{ productStore.getMergedData(traceChain)?.unit }}
-            </el-descriptions-item>
-          </el-descriptions>
-        </div>
-
-        <!-- 链上记录 -->
-        <div class="detail-section">
-          <h4>
-            链上记录
-            <el-tag v-if="productStore.hasAmendments(traceChain)" type="warning" size="small">
-              有修正记录
-            </el-tag>
-          </h4>
-          <el-timeline>
-            <el-timeline-item
-              v-for="record in traceChain.records"
-              :key="record.id"
-              :timestamp="formatTime(record.timestamp)"
-              :type="record.action === 'amend' ? 'warning' : 'primary'"
-            >
-              <div class="record-item">
-                <div class="record-header">
-                  <span class="action">{{ getActionLabel(record.action) }}</span>
-                  <span class="operator">{{ record.operator?.name }}</span>
-                </div>
-                <div v-if="record.txHash" class="record-hash">
-                  <el-icon><Link /></el-icon>
-                  {{ record.txHash.slice(0, 10) }}...{{ record.txHash.slice(-8) }}
-                </div>
-              </div>
-            </el-timeline-item>
-          </el-timeline>
-        </div>
-      </template>
-    </el-drawer>
   </div>
 </template>
 

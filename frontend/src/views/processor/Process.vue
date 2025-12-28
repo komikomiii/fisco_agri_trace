@@ -1,46 +1,29 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { useProductStore } from '../../store/product'
 import { useUserStore } from '../../store/user'
 import { useNotificationStore } from '../../store/notification'
 import ChainConfirm from '../../components/common/ChainConfirm.vue'
+import ChainVerify from '../../components/common/ChainVerify.vue'
 import TraceCode from '../../components/common/TraceCode.vue'
 import AmendRecord from '../../components/common/AmendRecord.vue'
+import * as processorApi from '../../api/processor'
 
-const productStore = useProductStore()
 const userStore = useUserStore()
 const notificationStore = useNotificationStore()
 
+// 产品数据
+const pendingProducts = ref([])
+const processingProducts = ref([])
+const sentProducts = ref([])
+const loading = ref(false)
+
+// 链上数据验证
+const chainVerifyVisible = ref(false)
+const verifyTraceCode = ref('')
+
 // Tab 切换
 const activeTab = ref('pending')
-
-// 待加工产品（已接收但未加工）
-const pendingProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'processor' &&
-    !c.records.some(r => r.action === 'process')
-  )
-})
-
-// 加工中的产品
-const processingProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    c.currentStage === 'processor' &&
-    c.records.some(r => r.action === 'process') &&
-    !c.records.some(r => r.action === 'send_inspect')
-  )
-})
-
-// 已送检的产品
-const sentProducts = computed(() => {
-  return productStore.productChains.filter(c =>
-    c.status === 'on_chain' &&
-    (c.currentStage === 'inspector' || c.records.some(r => r.action === 'send_inspect'))
-  )
-})
 
 // 当前显示的列表
 const currentList = computed(() => {
@@ -49,6 +32,27 @@ const currentList = computed(() => {
   if (activeTab.value === 'sent') return sentProducts.value
   return []
 })
+
+// 成品名称映射（根据原材料自动推荐）
+const productMapping = {
+  '草莓': ['草莓酱', '草莓罐头', '草莓干', '草莓汁'],
+  '番茄': ['番茄酱', '番茄罐头', '番茄汁', '番茄沙司'],
+  '苹果': ['苹果酱', '苹果罐头', '苹果干', '苹果汁'],
+  '黄瓜': ['黄瓜脆片', '酸黄瓜', '黄瓜汁', '黄瓜干'],
+  '有机西红柿': ['番茄酱', '番茄罐头', '番茄汁'],
+  '测试番茄': ['番茄酱', '番茄罐头', '番茄汁'],
+  '测试草莓': ['草莓酱', '草莓罐头', '草莓干', '草莓汁']
+}
+
+// 根据原材料获取推荐成品
+const getRecommendedProducts = (rawMaterial) => {
+  for (const [key, products] of Object.entries(productMapping)) {
+    if (rawMaterial.includes(key)) {
+      return products
+    }
+  }
+  return ['加工成品1', '加工成品2', '加工成品3']
+}
 
 // 状态映射
 const statusMap = {
@@ -77,22 +81,29 @@ const processForm = ref({
   notes: ''
 })
 
-const openProcessDialog = (chain = null) => {
-  if (chain) {
+const openProcessDialog = (product = null) => {
+  if (product) {
+    const recommended = getRecommendedProducts(product.name)
     processForm.value = {
-      chainId: chain.id,
+      productId: product.id,
+      traceCode: product.trace_code,
+      productName: product.name,
       processType: '',
-      outputProduct: '',
-      outputQuantity: 0,
-      notes: ''
+      outputProduct: recommended[0] || '', // 自动推荐第一个
+      outputQuantity: Math.floor(product.quantity || 100), // 默认产量
+      notes: '',
+      recommendedProducts: recommended
     }
   } else {
     processForm.value = {
-      chainId: null,
+      productId: null,
+      traceCode: '',
+      productName: '',
       processType: '',
       outputProduct: '',
       outputQuantity: 0,
-      notes: ''
+      notes: '',
+      recommendedProducts: []
     }
   }
   processDialogVisible.value = true
@@ -104,25 +115,18 @@ const pendingProcess = ref(null)
 const chainConfirmRef = ref(null)
 
 const confirmProcess = () => {
-  if (!processForm.value.chainId || !processForm.value.processType || !processForm.value.outputProduct) {
+  if (!processForm.value.productId || !processForm.value.processType || !processForm.value.outputProduct) {
     ElMessage.warning('请填写完整信息')
-    return
-  }
-
-  const chain = productStore.productChains.find(c => c.id === processForm.value.chainId)
-  if (!chain) {
-    ElMessage.error('未找到对应产品')
     return
   }
 
   const processTypeLabel = processTypes.find(t => t.value === processForm.value.processType)?.label
 
   pendingProcess.value = {
-    chain,
     form: { ...processForm.value },
     data: {
-      rawMaterial: chain.productName,
-      traceCode: chain.traceCode,
+      rawMaterial: processForm.value.productName,
+      traceCode: processForm.value.traceCode,
       processType: processTypeLabel,
       outputProduct: processForm.value.outputProduct,
       outputQuantity: `${processForm.value.outputQuantity} 件`
@@ -146,30 +150,27 @@ const onProcessConfirm = async () => {
   chainConfirmRef.value?.setLoading()
 
   try {
-    const result = await productStore.addRecord(pendingProcess.value.chain.id, {
-      stage: 'processor',
-      action: 'process',
-      data: {
-        processType: pendingProcess.value.form.processType,
-        outputProduct: pendingProcess.value.form.outputProduct,
-        outputQuantity: pendingProcess.value.form.outputQuantity,
+    // 调用后端 API 进行加工
+    const result = await processorApi.processProduct(
+      pendingProcess.value.form.productId,
+      {
+        product_id: pendingProcess.value.form.productId,
+        result_product: pendingProcess.value.form.outputProduct,
+        result_quantity: pendingProcess.value.form.outputQuantity,
+        process_type: pendingProcess.value.form.processType,
         notes: pendingProcess.value.form.notes
-      },
-      operator: {
-        id: userStore.user?.id || 2,
-        name: userStore.user?.name || '绿源加工厂',
-        role: 'processor'
       }
-    })
+    )
 
-    if (result) {
-      chainConfirmRef.value?.setSuccess(result.txHash, result.blockNumber)
-      ElMessage.success('加工记录已上链')
-    } else {
-      chainConfirmRef.value?.setError('上链失败，请重试')
-    }
+    chainConfirmRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
+
+    ElMessage.success('加工记录已上链')
+
+    // 刷新列表
+    await fetchPendingProducts()
+    await fetchProcessingProducts()
   } catch (error) {
-    chainConfirmRef.value?.setError(error.message || '上链失败')
+    chainConfirmRef.value?.setError(error.response?.data?.detail || '加工失败')
   }
 }
 
@@ -178,15 +179,14 @@ const sendInspectVisible = ref(false)
 const pendingSendInspect = ref(null)
 const sendInspectRef = ref(null)
 
-const openSendInspectDialog = (chain) => {
-  const processRecord = chain.records.find(r => r.action === 'process')
+const openSendInspectDialog = (product) => {
   pendingSendInspect.value = {
-    chain,
+    form: product,
     data: {
-      productName: processRecord?.data?.outputProduct || chain.productName,
-      traceCode: chain.traceCode,
-      processType: processTypes.find(t => t.value === processRecord?.data?.processType)?.label || '-',
-      quantity: `${processRecord?.data?.outputQuantity || 0} 件`
+      productName: product.name,
+      traceCode: product.trace_code,
+      processType: processTypes.find(t => t.value === product.process_type)?.label || '-',
+      quantity: `${product.quantity} ${product.unit || '件'}`
     },
     labels: {
       productName: '产品名称',
@@ -196,48 +196,6 @@ const openSendInspectDialog = (chain) => {
     }
   }
   sendInspectVisible.value = true
-}
-
-const onSendInspectConfirm = async () => {
-  if (!pendingSendInspect.value) return
-
-  sendInspectRef.value?.setLoading()
-
-  try {
-    const result = await productStore.addRecord(pendingSendInspect.value.chain.id, {
-      stage: 'processor',
-      action: 'send_inspect',
-      data: {
-        sendTime: new Date().toISOString()
-      },
-      operator: {
-        id: userStore.user?.id || 2,
-        name: userStore.user?.name || '绿源加工厂',
-        role: 'processor'
-      }
-    })
-
-    if (result) {
-      // 更新产品链阶段
-      pendingSendInspect.value.chain.currentStage = 'inspector'
-
-      sendInspectRef.value?.setSuccess(result.txHash, result.blockNumber)
-
-      // 通知质检员
-      notificationStore.addNotification({
-        type: notificationStore.NOTIFICATION_TYPES.PENDING,
-        title: '新产品待检测',
-        content: `${userStore.user?.name || '绿源加工厂'}送检的"${pendingSendInspect.value.data.productName}"等待您的检测。`,
-        relatedTraceCode: pendingSendInspect.value.chain.traceCode
-      })
-
-      ElMessage.success('已送检，等待质检员检测')
-    } else {
-      sendInspectRef.value?.setError('送检失败，请重试')
-    }
-  } catch (error) {
-    sendInspectRef.value?.setError(error.message || '送检失败')
-  }
 }
 
 // ==================== 修正记录 ====================
@@ -288,13 +246,115 @@ const handleAmendSubmit = async (amendData) => {
   ElMessage.success('修正记录已提交上链')
 }
 
+// ==================== 数据获取 ====================
+// 获取待加工产品列表
+const fetchPendingProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getPendingProducts()
+    pendingProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取待加工产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+// 获取加工中产品列表
+const fetchProcessingProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getProcessingProducts()
+    processingProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取加工中产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+// 获取已送检产品列表
+const fetchSentProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getSentProducts()
+    sentProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取已送检产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+// 页面加载时获取数据
+onMounted(() => {
+  fetchPendingProducts()
+  fetchProcessingProducts()
+  fetchSentProducts()
+})
+
 // ==================== 查看详情 ====================
 const detailDrawerVisible = ref(false)
-const detailChain = ref(null)
+const detailProduct = ref(null)
+const detailRecords = ref([])
+const detailLoading = ref(false)
 
-const viewDetail = (chain) => {
-  detailChain.value = chain
+const viewDetail = async (product) => {
+  detailProduct.value = product
   detailDrawerVisible.value = true
+
+  // 获取产品流转记录
+  try {
+    detailLoading.value = true
+    const records = await processorApi.getProductRecords(product.id)
+    detailRecords.value = records
+  } catch (error) {
+    console.error('获取记录失败:', error)
+    detailRecords.value = []
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+// 查看链上数据
+const viewChainData = (product) => {
+  verifyTraceCode.value = product.trace_code
+  chainVerifyVisible.value = true
+}
+
+// 打开链上验证
+const openChainVerify = (record) => {
+  verifyTraceCode.value = detailProduct.value.trace_code
+  chainVerifyVisible.value = true
+}
+
+// 送检功能
+const onSendInspectConfirm = async () => {
+  if (!pendingSendInspect.value) return
+
+  sendInspectRef.value?.setLoading()
+
+  try {
+    // 调用送检API
+    const result = await processorApi.sendInspectProduct(
+      pendingSendInspect.value.form.id,
+      {
+        product_id: pendingSendInspect.value.form.id,
+        inspection_type: 'quality',
+        notes: '加工完成，请求质检'
+      }
+    )
+
+    sendInspectRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
+
+    ElMessage.success('送检成功，产品已进入质检环节')
+
+    // 刷新列表
+    await fetchProcessingProducts()
+    await fetchSentProducts()
+  } catch (error) {
+    sendInspectRef.value?.setError(error.response?.data?.detail || '送检失败')
+  }
 }
 
 // 获取加工记录数据
@@ -311,17 +371,54 @@ const formatTime = (timestamp) => {
 
 // 获取操作描述
 const getActionLabel = (action) => {
+  const actionLower = action?.toLowerCase() || ''
   const map = {
-    create: '原料登记',
-    harvest: '采收出库',
-    amend: '信息修正',
-    receive: '接收确认',
+    create: '创建记录',
+    amend: '修正信息',
+    harvest: '采收上链',
+    receive: '接收原料',
     process: '加工处理',
     send_inspect: '送检',
     inspect: '质量检测',
-    stock: '入库登记'
+    stock: '入库登记',
+    reject: '退回处理',
+    terminate: '终止链条'
   }
-  return map[action] || action
+  return map[actionLower] || action
+}
+
+// 翻译备注中的加工类型（向后兼容旧数据）
+const translateRemark = (remark) => {
+  if (!remark) return remark
+
+  const typeMap = {
+    'wash': '清洗分拣',
+    'cut': '切割加工',
+    'juice': '榨汁加工',
+    'pack': '包装封装',
+    'freeze': '冷冻处理',
+    'dry': '烘干处理'
+  }
+
+  const inspectionMap = {
+    'quality': '质量检测',
+    'safety': '安全检测',
+    'appearance': '外观检测'
+  }
+
+  // 替换 "加工: juice → 草莓酱" 为 "加工: 榨汁加工 → 草莓酱"
+  let result = remark.replace(/加工:\s*(\w+)\s*→/g, (match, type) => {
+    const chineseType = typeMap[type] || type
+    return `加工: ${chineseType} →`
+  })
+
+  // 替换 "送检: quality" 为 "送检: 质量检测"
+  result = result.replace(/送检:\s*(\w+)/g, (match, type) => {
+    const chineseType = inspectionMap[type] || type
+    return `送检: ${chineseType}`
+  })
+
+  return result
 }
 
 // 获取产品状态
@@ -385,18 +482,18 @@ const getProductStatus = (chain) => {
         </el-tab-pane>
       </el-tabs>
 
-      <el-table :data="currentList" stripe>
-        <el-table-column prop="productName" label="产品" min-width="160">
+      <el-table :data="currentList" stripe v-loading="loading">
+        <el-table-column prop="name" label="产品" min-width="160">
           <template #default="{ row }">
             <div class="product-info">
               <el-avatar :size="36" shape="square" style="background: #1890ff">
-                {{ (getProcessData(row).outputProduct || row.productName).charAt(0) }}
+                {{ row.name.charAt(0) }}
               </el-avatar>
               <div class="info">
-                <span class="name">{{ getProcessData(row).outputProduct || row.productName }}</span>
-                <span class="code">{{ row.traceCode }}</span>
-                <span v-if="getProcessData(row).outputProduct" class="raw-material">
-                  原料：{{ row.productName }}
+                <span class="name">{{ row.name }}</span>
+                <span class="code">{{ row.trace_code }}</span>
+                <span v-if="row.process_type" class="raw-material">
+                  加工: {{ processTypes.find(t => t.value === row.process_type)?.label }}
                 </span>
               </div>
             </div>
@@ -404,24 +501,24 @@ const getProductStatus = (chain) => {
         </el-table-column>
         <el-table-column label="加工类型" width="120">
           <template #default="{ row }">
-            <el-tag v-if="getProcessData(row).processType" type="primary" effect="plain">
-              {{ processTypes.find(t => t.value === getProcessData(row).processType)?.label || '-' }}
+            <el-tag v-if="row.process_type" type="primary" effect="plain">
+              {{ processTypes.find(t => t.value === row.process_type)?.label || '-' }}
             </el-tag>
             <span v-else class="text-muted">未加工</span>
           </template>
         </el-table-column>
-        <el-table-column label="产出数量" width="100">
+        <el-table-column label="成品数量" width="100">
           <template #default="{ row }">
-            <span v-if="getProcessData(row).outputQuantity" class="quantity">
-              {{ getProcessData(row).outputQuantity }} 件
+            <span v-if="row.quantity" class="quantity">
+              {{ row.quantity }} {{ row.unit || '件' }}
             </span>
             <span v-else>-</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="statusMap[getProductStatus(row)]?.type">
-              {{ statusMap[getProductStatus(row)]?.label }}
+            <el-tag :type="statusMap[row.status]?.type">
+              {{ statusMap[row.status]?.label }}
             </el-tag>
           </template>
         </el-table-column>
@@ -433,7 +530,7 @@ const getProductStatus = (chain) => {
 
             <!-- 待加工：开始加工 -->
             <el-button
-              v-if="getProductStatus(row) === 'pending'"
+              v-if="row.status === 'pending'"
               type="success"
               text
               size="small"
@@ -443,17 +540,17 @@ const getProductStatus = (chain) => {
               开始加工
             </el-button>
 
-            <!-- 加工中：送检、修正 -->
-            <template v-if="getProductStatus(row) === 'processing'">
-              <el-button type="success" text size="small" @click="openSendInspectDialog(row)">
-                <el-icon><Van /></el-icon>
-                送检
-              </el-button>
-              <el-button type="warning" text size="small" @click="openAmendDialog(row)">
-                <el-icon><Edit /></el-icon>
-                修正
-              </el-button>
-            </template>
+            <!-- 加工中：送检 -->
+            <el-button
+              v-if="row.status === 'processing'"
+              type="success"
+              text
+              size="small"
+              @click="openSendInspectDialog(row)"
+            >
+              <el-icon><Van /></el-icon>
+              送检
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -465,24 +562,9 @@ const getProductStatus = (chain) => {
     <!-- 新建加工对话框 -->
     <el-dialog v-model="processDialogVisible" title="新建加工记录" width="500px">
       <el-form :model="processForm" label-width="100px">
-        <el-form-item label="选择原料" required>
-          <el-select
-            v-model="processForm.chainId"
-            placeholder="选择待加工的原料"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="chain in pendingProducts"
-              :key="chain.id"
-              :label="`${chain.productName} (${chain.traceCode})`"
-              :value="chain.id"
-            >
-              <div class="select-option">
-                <span class="name">{{ chain.productName }}</span>
-                <span class="code">{{ chain.traceCode }}</span>
-              </div>
-            </el-option>
-          </el-select>
+        <el-form-item label="原材料">
+          <span>{{ processForm.productName }}</span>
+          <span class="form-hint">({{ processForm.traceCode }})</span>
         </el-form-item>
         <el-form-item label="加工类型" required>
           <el-select v-model="processForm.processType" placeholder="选择加工类型" style="width: 100%">
@@ -495,10 +577,24 @@ const getProductStatus = (chain) => {
           </el-select>
         </el-form-item>
         <el-form-item label="成品名称" required>
-          <el-input v-model="processForm.outputProduct" placeholder="请输入成品名称" />
+          <el-select
+            v-model="processForm.outputProduct"
+            placeholder="选择或输入成品名称"
+            style="width: 100%"
+            filterable
+            allow-create
+          >
+            <el-option
+              v-for="product in processForm.recommendedProducts"
+              :key="product"
+              :label="product"
+              :value="product"
+            />
+          </el-select>
+          <div class="form-hint">根据原材料自动推荐，也可自定义输入</div>
         </el-form-item>
-        <el-form-item label="预计产量">
-          <el-input-number v-model="processForm.outputQuantity" :min="0" style="width: 200px" />
+        <el-form-item label="预计产量" required>
+          <el-input-number v-model="processForm.outputQuantity" :min="1" style="width: 200px" />
           <span style="margin-left: 10px">件</span>
         </el-form-item>
         <el-form-item label="备注">
@@ -558,65 +654,97 @@ const getProductStatus = (chain) => {
     <!-- 详情抽屉 -->
     <el-drawer
       v-model="detailDrawerVisible"
-      title="加工详情"
+      title="产品详情"
       size="500px"
     >
-      <template v-if="detailChain">
+      <template v-if="detailProduct">
         <!-- 溯源码 -->
         <div class="detail-section">
-          <TraceCode :trace-code="detailChain.traceCode" size="large" />
+          <TraceCode :code="detailProduct.trace_code" size="large" />
         </div>
 
-        <!-- 加工信息 -->
+        <!-- 基本信息 -->
         <div class="detail-section">
-          <h4>加工信息</h4>
+          <h4>基本信息</h4>
           <el-descriptions :column="1" border>
-            <el-descriptions-item label="原材料">
-              {{ detailChain.productName }}
+            <el-descriptions-item label="产品名称">
+              {{ detailProduct.name }}
             </el-descriptions-item>
-            <el-descriptions-item label="成品名称">
-              {{ getProcessData(detailChain).outputProduct || '-' }}
+            <el-descriptions-item label="溯源码">
+              {{ detailProduct.trace_code }}
             </el-descriptions-item>
-            <el-descriptions-item label="加工类型">
-              {{ processTypes.find(t => t.value === getProcessData(detailChain).processType)?.label || '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="产出数量">
-              {{ getProcessData(detailChain).outputQuantity || 0 }} 件
+            <el-descriptions-item label="数量">
+              {{ detailProduct.quantity }} {{ detailProduct.unit || 'kg' }}
             </el-descriptions-item>
             <el-descriptions-item label="状态">
-              <el-tag :type="statusMap[getProductStatus(detailChain)]?.type">
-                {{ statusMap[getProductStatus(detailChain)]?.label }}
+              <el-tag :type="statusMap[detailProduct.status]?.type">
+                {{ statusMap[detailProduct.status]?.label }}
               </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detailProduct.process_type" label="加工类型">
+              {{ processTypes.find(t => t.value === detailProduct.process_type)?.label || '-' }}
             </el-descriptions-item>
           </el-descriptions>
         </div>
 
         <!-- 链上记录 -->
         <div class="detail-section">
-          <h4>
-            链上记录
-            <el-tag v-if="productStore.hasAmendments(detailChain)" type="warning" size="small">
-              有修正记录
-            </el-tag>
-          </h4>
-          <el-timeline>
+          <div class="section-header">
+            <h4>
+              链上记录
+              <el-tag v-if="detailRecords.some(r => r.action === 'amend')" type="warning" size="small">
+                有修正记录
+              </el-tag>
+            </h4>
+            <el-button
+              v-if="detailRecords.length > 0"
+              type="primary"
+              link
+              size="small"
+              @click="viewChainData(detailProduct)"
+            >
+              <el-icon><Connection /></el-icon>
+              查看链信息
+            </el-button>
+          </div>
+          <div v-if="detailLoading" class="loading-records">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            加载中...
+          </div>
+          <el-timeline v-else>
             <el-timeline-item
-              v-for="record in detailChain.records"
+              v-for="record in detailRecords"
               :key="record.id"
-              :timestamp="formatTime(record.timestamp)"
+              :timestamp="formatTime(record.timestamp || record.created_at)"
               :type="record.action === 'amend' ? 'warning' : 'primary'"
             >
               <div class="record-item">
                 <div class="record-header">
                   <span class="action">{{ getActionLabel(record.action) }}</span>
-                  <span class="operator">{{ record.operator?.name }}</span>
+                  <span class="operator">{{ record.operator_name }}</span>
                 </div>
-                <div v-if="record.txHash" class="record-hash">
-                  <el-icon><Link /></el-icon>
-                  {{ record.txHash.slice(0, 10) }}...{{ record.txHash.slice(-8) }}
+                <div v-if="record.remark" class="record-remark">
+                  {{ translateRemark(record.remark) }}
                 </div>
-                <div v-if="record.reason" class="record-reason">
-                  修正原因：{{ record.reason }}
+                <div v-if="record.tx_hash" class="chain-info-box" @click="openChainVerify(record)">
+                  <div class="chain-badge">
+                    <el-icon><Connection /></el-icon>
+                    <span>FISCO BCOS</span>
+                  </div>
+                  <div class="chain-details">
+                    <div class="chain-row">
+                      <span class="chain-label">交易哈希</span>
+                      <span class="chain-value">{{ record.tx_hash.slice(0, 10) }}...{{ record.tx_hash.slice(-8) }}</span>
+                    </div>
+                    <div v-if="record.block_number" class="chain-row">
+                      <span class="chain-label">区块高度</span>
+                      <span class="chain-value">#{{ record.block_number }}</span>
+                    </div>
+                  </div>
+                  <div class="verify-btn">
+                    <el-icon><View /></el-icon>
+                    <span>验证</span>
+                  </div>
                 </div>
               </div>
             </el-timeline-item>
@@ -624,6 +752,12 @@ const getProductStatus = (chain) => {
         </div>
       </template>
     </el-drawer>
+
+    <!-- 链上数据弹窗 -->
+    <ChainVerify
+      v-model:visible="chainVerifyVisible"
+      :trace-code="verifyTraceCode"
+    />
   </div>
 </template>
 
@@ -771,5 +905,120 @@ const getProductStatus = (chain) => {
   border-radius: 6px;
   font-size: 13px;
   color: #ad6800;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-header h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.loading-records {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 0;
+  color: var(--text-muted);
+}
+
+.record-remark {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* 链上信息卡片 */
+.chain-info-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08));
+  border: 1px solid rgba(102, 126, 234, 0.2);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.chain-info-box:hover {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.15));
+  border-color: rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
+}
+
+.chain-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chain-badge .el-icon {
+  font-size: 12px;
+}
+
+.chain-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chain-label {
+  color: var(--text-muted);
+}
+
+.chain-value {
+  color: #667eea;
+  font-family: monospace;
+  font-weight: 500;
+}
+
+.verify-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.chain-info-box:hover .verify-btn {
+  background: #667eea;
+  color: white;
+}
+
+.form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 8px;
 }
 </style>
