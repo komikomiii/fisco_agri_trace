@@ -84,13 +84,30 @@ async def get_transaction(tx_hash: str):
         if input_data and len(input_data) > 200:
             input_data = input_data[:200] + "..."
 
+        # 从交易回执中获取实际的区块号和状态
+        actual_block_number = None
+        status = "0x0"  # 默认成功
+        if receipt:
+            # 获取区块号
+            block_num = receipt.get("blockNumber")
+            if block_num:
+                actual_block_number = int(block_num) if isinstance(block_num, int) else int(block_num)
+
+            # 获取状态（Console 返回数字，需要转换为 0x0 格式）
+            receipt_status = receipt.get("status")
+            if receipt_status is not None:
+                if isinstance(receipt_status, int):
+                    status = "0x0" if receipt_status == 0 else "0x1"
+                else:
+                    status = receipt_status
+
         return {
             "tx_hash": tx.get("hash", tx_hash),
-            "block_number": tx.get("blockLimit"),  # Console 返回 blockLimit
+            "block_number": actual_block_number,  # 从回执中获取实际区块号
             "from_address": tx.get("from"),
             "to_address": tx.get("to"),
             "input": input_data,
-            "status": receipt.get("status") if receipt else "0x0",  # 默认成功
+            "status": status,
             "gas_used": receipt.get("gasUsed") if receipt else None,
             "contract_address": tx.get("to"),
             "chain_id": tx.get("chainID"),

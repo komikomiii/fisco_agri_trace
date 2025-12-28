@@ -207,13 +207,18 @@ const viewDetail = async (product) => {
 
 const viewChainData = (product) => {
   verifyTraceCode.value = product.trace_code
+  verifyTxHash.value = product.tx_hash || ''
+  verifyBlockNumber.value = product.block_number || null
   chainVerifyVisible.value = true
 }
 
 const openChainVerify = (record) => {
+  console.log('[Products] openChainVerify called with:', record)
   verifyTxHash.value = record?.tx_hash || ''
-  verifyTraceCode.value = detailProduct.value.trace_code
+  verifyTraceCode.value = detailProduct.value?.trace_code || ''
   verifyBlockNumber.value = record?.block_number || null
+  console.log('[Products] Setting verifyTxHash:', verifyTxHash.value)
+  console.log('[Products] Setting verifyBlockNumber:', verifyBlockNumber.value)
   chainVerifyVisible.value = true
 }
 
@@ -580,45 +585,64 @@ onMounted(() => {
       title="产品详情"
       size="500px"
     >
-      <div v-if="detailProduct" class="detail-content">
-        <!-- 产品基本信息 -->
+      <template v-if="detailProduct">
+        <!-- 溯源码 -->
         <div class="detail-section">
-          <h4>基本信息</h4>
-          <div class="detail-info">
-            <div class="info-item">
-              <span class="label">溯源码</span>
-              <div class="value-wrapper">
-                <TraceCode :code="detailProduct.trace_code" />
-              </div>
-            </div>
-            <div class="info-item">
-              <span class="label">产品名称</span>
-              <span class="value">{{ detailProduct.name }}</span>
-            </div>
-            <div class="info-item">
-              <span class="label">品类</span>
-              <span class="value">{{ detailProduct.category || '-' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="label">产地</span>
-              <span class="value">{{ detailProduct.origin || '-' }}</span>
-            </div>
-          </div>
+          <TraceCode :code="detailProduct.trace_code" size="large" />
         </div>
 
-        <!-- 流转记录 -->
+        <!-- 基本信息 -->
         <div class="detail-section">
-          <h4>流转记录</h4>
-          <div v-if="detailLoading" class="loading-state">
-            <el-icon class="is-loading"><Loading /></el-icon>
-            <span>加载中...</span>
+          <h4>基本信息</h4>
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="产品名称">
+              {{ detailProduct.name }}
+            </el-descriptions-item>
+            <el-descriptions-item label="溯源码">
+              {{ detailProduct.trace_code }}
+            </el-descriptions-item>
+            <el-descriptions-item label="品类">
+              {{ detailProduct.category || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="产地">
+              {{ detailProduct.origin || '-' }}
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detailProduct.quantity" label="数量">
+              {{ detailProduct.quantity }} {{ detailProduct.unit || 'kg' }}
+            </el-descriptions-item>
+          </el-descriptions>
+        </div>
+
+        <!-- 链上记录 -->
+        <div class="detail-section">
+          <div class="section-header">
+            <h4>
+              链上记录
+              <el-tag v-if="detailRecords.some(r => r.action === 'amend')" type="warning" size="small">
+                有修正记录
+              </el-tag>
+            </h4>
+            <el-button
+              v-if="detailRecords.length > 0"
+              type="primary"
+              link
+              size="small"
+              @click="viewChainData(detailProduct)"
+            >
+              <el-icon><Connection /></el-icon>
+              查看链信息
+            </el-button>
           </div>
-          <el-timeline v-else-if="detailRecords.length > 0">
+          <div v-if="detailLoading" class="loading-records">
+            <el-icon class="is-loading"><Loading /></el-icon>
+            加载中...
+          </div>
+          <el-timeline v-else>
             <el-timeline-item
               v-for="record in detailRecords"
               :key="record.id"
               :timestamp="formatTime(record.created_at)"
-              placement="top"
+              :type="record.action === 'amend' ? 'warning' : 'primary'"
             >
               <div class="record-item">
                 <div class="record-header">
@@ -635,20 +659,24 @@ onMounted(() => {
                   </div>
                   <div class="chain-details">
                     <div class="chain-row">
-                      <span class="chain-label">区块</span>
+                      <span class="chain-label">交易哈希</span>
+                      <span class="chain-value">{{ record.tx_hash.slice(0, 10) }}...{{ record.tx_hash.slice(-8) }}</span>
+                    </div>
+                    <div v-if="record.block_number" class="chain-row">
+                      <span class="chain-label">区块高度</span>
                       <span class="chain-value">#{{ record.block_number }}</span>
                     </div>
                   </div>
-                  <div class="verify-btn">查看详情 →</div>
+                  <div class="verify-btn">
+                    <el-icon><View /></el-icon>
+                    <span>验证</span>
+                  </div>
                 </div>
               </div>
             </el-timeline-item>
           </el-timeline>
-          <div v-else class="empty-state">
-            <span>暂无记录</span>
-          </div>
         </div>
-      </div>
+      </template>
     </el-drawer>
 
     <!-- 链上数据弹窗 -->
@@ -829,119 +857,118 @@ onMounted(() => {
   color: var(--success-color);
 }
 
-.detail-content {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
+/* 详情相关样式 */
+.detail-section {
+  margin-bottom: 24px;
 }
 
 .detail-section h4 {
-  font-size: 16px;
-  color: var(--text-primary);
-  margin-bottom: 16px;
-  padding-bottom: 8px;
-  border-bottom: 2px solid var(--primary-color);
-}
-
-.detail-info {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-}
-
-.info-item .label {
-  font-size: 14px;
-  color: var(--text-muted);
-}
-
-.info-item .value {
   font-size: 14px;
   color: var(--text-primary);
-  font-weight: 500;
-}
-
-.value-wrapper {
+  margin-bottom: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-header h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.loading-records {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 40px 0;
+  color: var(--text-muted);
+}
+
 .record-item {
-  padding: 12px;
-  background: var(--bg-color);
-  border-radius: 8px;
-  border-left: 3px solid var(--primary-color);
+  padding: 8px 0;
 }
 
 .record-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  gap: 12px;
+  margin-bottom: 4px;
 }
 
 .record-header .action {
-  font-weight: 600;
-  color: var(--primary-color);
+  font-weight: 500;
 }
 
 .record-header .operator {
-  font-size: 12px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 
 .record-remark {
+  margin-top: 4px;
   font-size: 13px;
   color: var(--text-secondary);
-  margin-top: 4px;
 }
 
+/* 链上信息卡片 */
 .chain-info-box {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 12px;
-  padding: 10px 12px;
+  margin-top: 8px;
+  padding: 10px 14px;
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.08));
   border: 1px solid rgba(102, 126, 234, 0.2);
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 0.3s ease;
 }
 
 .chain-info-box:hover {
-  background: linear-gradient(135deg, rgba(102, 126, 234, 0.12), rgba(118, 75, 162, 0.12));
-  transform: translateX(4px);
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.15));
+  border-color: rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
 }
 
 .chain-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 4px 10px;
   background: linear-gradient(135deg, #667eea, #764ba2);
-  border-radius: 6px;
   color: white;
-  font-size: 12px;
+  border-radius: 6px;
+  font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.chain-badge .el-icon {
+  font-size: 12px;
 }
 
 .chain-details {
-  display: flex;
-  gap: 16px;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .chain-row {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
 }
 
@@ -950,20 +977,26 @@ onMounted(() => {
 }
 
 .chain-value {
-  color: var(--primary-color);
-  font-weight: 600;
+  color: #667eea;
   font-family: monospace;
+  font-weight: 500;
 }
 
 .verify-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  border-radius: 6px;
   font-size: 12px;
-  color: var(--primary-color);
   font-weight: 500;
-  opacity: 0;
   transition: all 0.2s;
 }
 
 .chain-info-box:hover .verify-btn {
-  opacity: 1;
+  background: #667eea;
+  color: white;
 }
 </style>

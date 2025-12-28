@@ -74,9 +74,62 @@ class FiscoBcosClient:
         return 0
 
     def get_transaction_receipt(self, tx_hash: str) -> Optional[Dict]:
-        """获取交易回执"""
+        """获取交易回执（先尝试 RPC，失败则使用 Console）"""
+        import json
+
+        # 先尝试 RPC
         result = self._rpc_call("getTransactionReceipt", [self.group_id, tx_hash, True])
-        return result.get("result")
+        if result.get("result"):
+            return result.get("result")
+
+        # RPC 失败，回退到 Console
+        command = f'getTransactionReceipt {tx_hash}'
+        success, stdout, stderr = self._run_console_command(command)
+        if not success or not stdout:
+            return None
+
+        # Console 输出是 JSON 格式
+        try:
+            receipt = json.loads(stdout)
+            return receipt
+        except json.JSONDecodeError:
+            # 如果 JSON 解析失败，尝试 key=value 格式（旧版本）
+            receipt = {}
+            lines = stdout.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if '=' in line and not line.startswith('JsonTransactionResponse'):
+                    if line.endswith(','):
+                        line = line[:-1]
+                    parts = line.split('=', 1)
+                    if len(parts) == 2:
+                        key = parts[0].strip().strip('"')
+                        value = parts[1].strip().strip(',').strip("'").strip('"')
+                        receipt[key] = value
+
+            return receipt if receipt else None
+
+    def _wait_for_transaction(self, tx_hash: str, timeout: int = 30, poll_interval: float = 1.0) -> Optional[int]:
+        """
+        等待交易被打包进区块，返回实际区块号
+        """
+        import time
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            receipt = self.get_transaction_receipt(tx_hash)
+            if receipt and receipt.get("status") == "0x0":
+                # 交易成功，获取区块号
+                block_number = receipt.get("blockNumber")
+                if block_number:
+                    # 如果是十六进制字符串，转换为整数
+                    if isinstance(block_number, str) and block_number.startswith("0x"):
+                        return int(block_number, 16)
+                    return int(block_number)
+            time.sleep(poll_interval)
+
+        # 超时返回当前区块号
+        return self.get_block_number()
 
     def _run_console_command(self, command: str) -> Tuple[bool, str, str]:
         """
@@ -174,8 +227,10 @@ class FiscoBcosClient:
 
         # 如果成功，获取区块号
         if parsed["success"] and parsed["tx_hash"]:
-            block_number = self.get_block_number()
-            return True, parsed["tx_hash"], block_number
+            tx_hash = parsed["tx_hash"]
+            # 等待交易被打包并获取实际区块号
+            block_number = self._wait_for_transaction(tx_hash)
+            return True, tx_hash, block_number
 
         return False, None, None
 
@@ -212,8 +267,10 @@ class FiscoBcosClient:
         parsed = self._parse_console_output(stdout)
 
         if parsed["success"] and parsed["tx_hash"]:
-            block_number = self.get_block_number()
-            return True, parsed["tx_hash"], block_number
+            tx_hash = parsed["tx_hash"]
+            # 等待交易被打包并获取实际区块号
+            block_number = self._wait_for_transaction(tx_hash)
+            return True, tx_hash, block_number
 
         return False, None, None
 
@@ -247,8 +304,10 @@ class FiscoBcosClient:
         parsed = self._parse_console_output(stdout)
 
         if parsed["success"] and parsed["tx_hash"]:
-            block_number = self.get_block_number()
-            return True, parsed["tx_hash"], block_number
+            tx_hash = parsed["tx_hash"]
+            # 等待交易被打包并获取实际区块号
+            block_number = self._wait_for_transaction(tx_hash)
+            return True, tx_hash, block_number
 
         return False, None, None
 
@@ -293,8 +352,10 @@ class FiscoBcosClient:
         parsed = self._parse_console_output(stdout)
 
         if parsed["success"] and parsed["tx_hash"]:
-            block_number = self.get_block_number()
-            return True, parsed["tx_hash"], block_number
+            tx_hash = parsed["tx_hash"]
+            # 等待交易被打包并获取实际区块号
+            block_number = self._wait_for_transaction(tx_hash)
+            return True, tx_hash, block_number
 
         return False, None, None
 

@@ -73,14 +73,19 @@ const formatTimestamp = (timestamp) => {
 
 // 加载交易详情
 const loadTransaction = async () => {
-  if (!props.txHash) return
+  if (!props.txHash) {
+    console.log('[ChainVerify] No txHash provided')
+    return
+  }
 
+  console.log('[ChainVerify] Loading transaction:', props.txHash)
   loading.value = true
   try {
     const data = await blockchainApi.getTransaction(props.txHash)
+    console.log('[ChainVerify] Transaction data received:', data)
     transactionData.value = data
   } catch (error) {
-    console.error('加载交易失败', error)
+    console.error('[ChainVerify] 加载交易失败', error)
     transactionData.value = null
   } finally {
     loading.value = false
@@ -89,14 +94,19 @@ const loadTransaction = async () => {
 
 // 加载区块详情
 const loadBlock = async () => {
-  if (!props.blockNumber) return
+  if (!props.blockNumber) {
+    console.log('[ChainVerify] No blockNumber provided')
+    return
+  }
 
+  console.log('[ChainVerify] Loading block:', props.blockNumber)
   loading.value = true
   try {
     const data = await blockchainApi.getBlock(props.blockNumber)
+    console.log('[ChainVerify] Block data received:', data)
     blockData.value = data
   } catch (error) {
-    console.error('加载区块失败', error)
+    console.error('[ChainVerify] 加载区块失败', error)
     blockData.value = null
   } finally {
     loading.value = false

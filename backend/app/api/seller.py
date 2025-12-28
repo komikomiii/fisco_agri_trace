@@ -156,12 +156,15 @@ async def list_sold_products(
                 "id": product.id,
                 "trace_code": product.trace_code,
                 "name": product.name,
+                "category": product.category,
+                "origin": product.origin,
                 "quantity": listing_info.get("quantity", product.quantity),
                 "unit": product.unit,
                 "shelf_location": shelf_location,  # 上架位置
                 "price": price,  # 价格
                 "listing_time": record.created_at.isoformat() if record.created_at else None,
-                "tx_hash": record.tx_hash
+                "tx_hash": record.tx_hash,
+                "block_number": record.block_number
             })
 
     return result
