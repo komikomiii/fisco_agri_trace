@@ -30,6 +30,7 @@ const emit = defineEmits(['viewDetail', 'generateQrcode'])
 
 const qrcodeVisible = ref(false)
 const qrcodeCanvas = ref(null)
+const qrcodeImage = ref(null)
 
 // 二维码内容：指向公共溯源页面的 URL
 const qrcodeValue = computed(() => {
@@ -38,6 +39,11 @@ const qrcodeValue = computed(() => {
   const baseUrl = window.location.origin
   return `${baseUrl}/trace/${props.code}`
 })
+
+// 处理二维码生成完成事件
+const onQrcodeReady = (canvas) => {
+  qrcodeCanvas.value = canvas
+}
 
 const copyCode = async () => {
   try {
@@ -55,8 +61,12 @@ const showQrcodeDialog = () => {
 
 // 下载二维码
 const downloadQrcode = () => {
-  const canvas = qrcodeCanvas.value
-  if (!canvas) return
+  // 查找 canvas 元素
+  const canvas = document.querySelector('.qrcode-wrapper canvas')
+  if (!canvas) {
+    ElMessage.error('二维码未生成，请稍后重试')
+    return
+  }
 
   try {
     // 创建图片
@@ -66,24 +76,36 @@ const downloadQrcode = () => {
     const link = document.createElement('a')
     link.href = image
     link.download = `溯源码_${props.code}.png`
+    document.body.appendChild(link)
     link.click()
+    document.body.removeChild(link)
 
     ElMessage.success('二维码下载成功')
   } catch (err) {
+    console.error('下载失败:', err)
     ElMessage.error('下载失败，请截图保存')
   }
 }
 
 // 打印二维码
 const printQrcode = () => {
-  const canvas = qrcodeCanvas.value
-  if (!canvas) return
+  // 查找 canvas 元素
+  const canvas = document.querySelector('.qrcode-wrapper canvas')
+  if (!canvas) {
+    ElMessage.error('二维码未生成，请稍后重试')
+    return
+  }
 
   try {
     const image = canvas.toDataURL('image/png')
 
     // 创建新窗口进行打印
     const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      ElMessage.error('弹窗被拦截，请允许弹出窗口后重试')
+      return
+    }
+
     printWindow.document.write(`
       <!DOCTYPE html>
       <html>
@@ -126,17 +148,18 @@ const printQrcode = () => {
           <div class="trace-code">${props.code}</div>
           <div class="tip">扫描二维码查看产品溯源信息</div>
         </div>
-        <` + `script>
+        <script>
           window.onload = function() {
             window.print()
             window.close()
           }
-        </` + `script>
+        <\/script>
       </body>
       </html>
     `)
     printWindow.document.close()
   } catch (err) {
+    console.error('打印失败:', err)
     ElMessage.error('打印失败')
   }
 }

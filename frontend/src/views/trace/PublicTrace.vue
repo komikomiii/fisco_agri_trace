@@ -10,8 +10,11 @@ import {
   ArrowDown,
   InfoFilled,
   Document,
-  CopyDocument
+  CopyDocument,
+  Download,
+  Printer
 } from '@element-plus/icons-vue'
+import VueQr from '@chenfengyuan/vue-qrcode'
 import { blockchainApi } from '../../api/blockchain'
 
 const route = useRoute()
@@ -306,6 +309,112 @@ const generateAISummary = async () => {
   router.push('/dashboard/consumer/history?generate=' + traceCode.value)
 }
 
+// 二维码相关
+const qrcodeValue = computed(() => {
+  if (!traceCode.value) return ''
+  const baseUrl = window.location.origin
+  return `${baseUrl}/trace/${traceCode.value}`
+})
+
+// 下载二维码
+const downloadQrcode = () => {
+  const canvas = document.querySelector('.public-qrcode-wrapper canvas')
+  if (!canvas) {
+    ElMessage.error('二维码未生成，请稍后重试')
+    return
+  }
+
+  try {
+    const image = canvas.toDataURL('image/png')
+    const link = document.createElement('a')
+    link.href = image
+    link.download = `溯源码_${traceCode.value}.png`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+
+    ElMessage.success('二维码下载成功')
+  } catch (err) {
+    console.error('下载失败:', err)
+    ElMessage.error('下载失败，请截图保存')
+  }
+}
+
+// 打印二维码
+const printQrcode = () => {
+  const canvas = document.querySelector('.public-qrcode-wrapper canvas')
+  if (!canvas) {
+    ElMessage.error('二维码未生成，请稍后重试')
+    return
+  }
+
+  try {
+    const image = canvas.toDataURL('image/png')
+
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      ElMessage.error('弹窗被拦截，请允许弹出窗口后重试')
+      return
+    }
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>产品溯源二维码 - ${traceCode.value}</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 40px;
+          }
+          .qrcode-container {
+            display: inline-block;
+            padding: 30px;
+            border: 2px solid #2db84d;
+            border-radius: 16px;
+          }
+          .qrcode-image {
+            margin-bottom: 20px;
+          }
+          .trace-code {
+            font-size: 18px;
+            font-weight: bold;
+            color: #2db84d;
+            margin-bottom: 10px;
+          }
+          .tip {
+            color: #666;
+            font-size: 14px;
+          }
+          @media print {
+            body { padding: 0; }
+            .qrcode-container { border: 2px solid #000; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="qrcode-container">
+          <img src="${image}" class="qrcode-image" width="200" height="200" />
+          <div class="trace-code">${traceCode.value}</div>
+          <div class="tip">扫描二维码查看产品溯源信息</div>
+        </div>
+        <script>
+          window.onload = function() {
+            window.print()
+            window.close()
+          }
+        <\/script>
+      </body>
+      </html>
+    `)
+    printWindow.document.close()
+  } catch (err) {
+    console.error('打印失败:', err)
+    ElMessage.error('打印失败')
+  }
+}
+
 onMounted(() => {
   if (traceCode.value) {
     fetchTraceData()
@@ -415,6 +524,39 @@ const unwatch = router.afterEach((to) => {
                 <span>生成 AI 简报</span>
                 <el-icon><ArrowDown /></el-icon>
               </button>
+            </div>
+
+            <!-- 二维码卡片 -->
+            <div class="qrcode-card">
+              <div class="qrcode-header">
+                <span class="qrcode-icon">📱</span>
+                <span class="qrcode-title">产品溯源二维码</span>
+              </div>
+              <div class="qrcode-content">
+                <div class="public-qrcode-wrapper">
+                  <div class="qrcode-border">
+                    <VueQr
+                        :value="qrcodeValue"
+                        :size="160"
+                        :margin="8"
+                        :level="'H'"
+                        :render-as="'canvas'"
+                      />
+                  </div>
+                </div>
+                <div class="qrcode-code-text">{{ traceCode }}</div>
+                <p class="qrcode-tip">扫描二维码查看产品溯源信息</p>
+              </div>
+              <div class="qrcode-actions">
+                <button class="qrcode-btn download-btn" @click="downloadQrcode">
+                  <el-icon><Download /></el-icon>
+                  <span>下载二维码</span>
+                </button>
+                <button class="qrcode-btn print-btn" @click="printQrcode">
+                  <el-icon><Printer /></el-icon>
+                  <span>打印</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1397,5 +1539,107 @@ const unwatch = router.afterEach((to) => {
   padding: 40px;
   color: #999;
   font-size: 14px;
+}
+
+/* 二维码卡片 */
+.qrcode-card {
+  background: white;
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
+
+.qrcode-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.qrcode-icon {
+  font-size: 18px;
+}
+
+.qrcode-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.qrcode-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.public-qrcode-wrapper {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.qrcode-border {
+  padding: 12px;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  display: inline-block;
+}
+
+.qrcode-code-text {
+  padding: 10px 20px;
+  background: linear-gradient(135deg, rgba(45, 184, 77, 0.1), rgba(45, 184, 77, 0.05));
+  border-radius: 8px;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: #52c41a;
+  margin-bottom: 8px;
+}
+
+.qrcode-tip {
+  color: #999;
+  font-size: 12px;
+  margin: 0;
+}
+
+.qrcode-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.qrcode-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.download-btn {
+  background: linear-gradient(135deg, #52c41a, #73d13d);
+  color: white;
+}
+
+.download-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(82, 196, 26, 0.3);
+}
+
+.print-btn {
+  background: #f5f5f5;
+  color: #666;
+}
+
+.print-btn:hover {
+  background: #e8e8e8;
 }
 </style>
