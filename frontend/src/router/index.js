@@ -72,7 +72,7 @@ const routes = [
       {
         path: 'seller/inventory',
         name: 'SellerInventory',
-        component: () => import('../views/seller/Inventory.vue'),
+        component: () => import('../views/seller/Products.vue'),
         meta: { title: '库存管理', role: 'seller' }
       },
       {

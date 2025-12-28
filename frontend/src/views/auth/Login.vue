@@ -44,12 +44,6 @@ const platformStats = [
   { label: '开放透明', icon: 'View' }
 ]
 
-// 快捷选择角色登录
-const selectRole = (role) => {
-  loginForm.username = role.key
-  loginForm.password = '123456'
-}
-
 // 注册时选择角色
 const selectRegisterRole = (role) => {
   registerForm.role = role.key
@@ -268,21 +262,7 @@ const selectedRoleColor = computed(() => {
         <!-- 登录表单 -->
         <div v-show="mode === 'login'" class="form-container">
           <div class="form-header">
-            <p>请选择角色快速登录，或输入账号密码</p>
-          </div>
-
-          <!-- 角色快捷选择 -->
-          <div class="role-selector">
-            <div
-              class="role-card"
-              v-for="role in roles"
-              :key="role.key"
-              :class="[role.key, { active: loginForm.username === role.key }]"
-              @click="selectRole(role)"
-            >
-              <el-icon :size="24"><component :is="role.icon" /></el-icon>
-              <span class="role-name">{{ role.name }}</span>
-            </div>
+            <p>请输入您的账号密码登录</p>
           </div>
 
           <!-- 登录表单 -->
@@ -319,7 +299,7 @@ const selectedRoleColor = computed(() => {
           </el-form>
 
           <div class="form-footer">
-            <span class="hint">演示账号: 角色名/123456</span>
+            <span class="hint">还没有账号？<a @click="switchMode('register')">立即注册</a></span>
           </div>
         </div>
 
@@ -771,12 +751,12 @@ const selectedRoleColor = computed(() => {
   font-size: 14px;
 }
 
-/* 角色选择器 */
+/* 角色选择器（仅注册使用） */
 .role-selector {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 8px;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .register-roles {
@@ -884,6 +864,16 @@ const selectedRoleColor = computed(() => {
 .hint {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.hint a {
+  color: var(--primary-color);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.hint a:hover {
+  text-decoration: underline;
 }
 
 /* 响应式 */

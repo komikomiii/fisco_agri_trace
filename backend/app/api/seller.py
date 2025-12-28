@@ -84,6 +84,18 @@ async def list_inventory_products(
         # 计算剩余库存
         available_quantity = (product.quantity or 0) - sold_quantity
 
+        # 解析入库记录数据
+        warehouse = "未入库"
+        if stock_in_record:
+            try:
+                if isinstance(stock_in_record.data, str):
+                    data = json.loads(stock_in_record.data)
+                else:
+                    data = stock_in_record.data
+                warehouse = data.get("warehouse", "未入库") if data else "未入库"
+            except:
+                warehouse = "未入库"
+
         result.append({
             "id": product.id,
             "trace_code": product.trace_code,
@@ -93,7 +105,7 @@ async def list_inventory_products(
             "unit": product.unit,
             "available_quantity": available_quantity,
             "origin": product.origin,
-            "warehouse": stock_in_record.data.get("warehouse", "未入库") if stock_in_record and stock_in_record.data else "未入库",
+            "warehouse": warehouse,
             "stock_in_time": stock_in_record.created_at.isoformat() if stock_in_record else None
         })
 
@@ -106,13 +118,13 @@ async def list_sold_products(
     current_user: User = Depends(get_current_user)
 ):
     """
-    获取已售出产品列表
-    - 有销售记录
+    获取上架记录列表
+    - 有上架记录（SELL action）
     - 由当前销售商操作
     """
     check_seller_role(current_user)
 
-    # 查询销售记录
+    # 查询上架记录
     sell_records = db.query(ProductRecord).filter(
         ProductRecord.operator_id == current_user.id,
         ProductRecord.action == RecordAction.SELL
@@ -122,22 +134,33 @@ async def list_sold_products(
     for record in sell_records:
         product = db.query(Product).filter(Product.id == record.product_id).first()
         if product:
-            # 从记录数据中获取销售信息
-            sell_info = {}
+            # 从记录数据中获取上架信息
+            listing_info = {}
             if record.data:
                 try:
-                    sell_info = json.loads(record.data) if isinstance(record.data, str) else record.data
+                    listing_info = json.loads(record.data) if isinstance(record.data, str) else record.data
                 except:
-                    sell_info = {}
+                    listing_info = {}
+
+            # 直接从新格式获取价格和位置，兼容旧格式
+            price = listing_info.get("price") or listing_info.get("buyer_phone", "")
+            shelf_location = listing_info.get("shelf_location") or listing_info.get("buyer_name", "")
+
+            # 尝试解析价格为浮点数
+            try:
+                price = float(price) if price else 0
+            except:
+                price = 0
 
             result.append({
                 "id": product.id,
                 "trace_code": product.trace_code,
                 "name": product.name,
-                "quantity": sell_info.get("quantity", 0),
+                "quantity": listing_info.get("quantity", product.quantity),
                 "unit": product.unit,
-                "buyer_name": sell_info.get("buyer_name", ""),
-                "sell_time": record.created_at.isoformat() if record.created_at else None,
+                "shelf_location": shelf_location,  # 上架位置
+                "price": price,  # 价格
+                "listing_time": record.created_at.isoformat() if record.created_at else None,
                 "tx_hash": record.tx_hash
             })
 
@@ -237,12 +260,11 @@ async def sell_product(
     current_user: User = Depends(get_current_user)
 ):
     """
-    销售产品
+    产品上架（记录上架价格和位置）
     1. 验证产品在销售商阶段
-    2. 检查库存是否充足
-    3. 调用智能合约记录销售操作
-    4. 转移产品到 SOLD 阶段
-    5. 更新产品记录
+    2. 检查产品是否已入库
+    3. 调用智能合约记录上架操作
+    4. 创建上架记录（不改变产品阶段）
     """
     check_seller_role(current_user)
 
@@ -258,117 +280,65 @@ async def sell_product(
     if product.current_holder_id != current_user.id:
         raise HTTPException(status_code=400, detail="该产品未分配给当前销售商")
 
-    # 3. 检查库存
-    # 获取已销售总量
-    sell_records = db.query(ProductRecord).filter(
+    # 3. 检查是否已入库
+    stock_in_record = db.query(ProductRecord).filter(
         ProductRecord.product_id == product_id,
-        ProductRecord.action == RecordAction.SELL
-    ).all()
+        ProductRecord.action == RecordAction.STOCK_IN
+    ).first()
 
-    sold_quantity = 0
-    for record in sell_records:
-        try:
-            data = json.loads(record.data) if isinstance(record.data, str) else record.data
-            sold_quantity += data.get("quantity", 0)
-        except:
-            pass
+    if not stock_in_record:
+        raise HTTPException(status_code=400, detail="请先完成入库操作")
 
-    available_quantity = (product.quantity or 0) - sold_quantity
-
-    if sell_data.quantity > available_quantity:
-        raise HTTPException(
-            status_code=400,
-            detail=f"库存不足。可用: {available_quantity} {product.unit}, 请求: {sell_data.quantity} {product.unit}"
-        )
-
-    # 4. 准备链上数据
+    # 4. 准备链上数据（上架记录）
     chain_data = {
         "trace_code": product.trace_code,
-        "action": "sell",
+        "action": "shelf_listing",  # 上架
         "quantity": sell_data.quantity,
-        "buyer_name": sell_data.buyer_name,
-        "buyer_phone": sell_data.buyer_phone,
+        "price": sell_data.buyer_phone,  # buyer_phone 字段存储价格
+        "shelf_location": sell_data.buyer_name,  # buyer_name 字段存储上架位置
         "notes": sell_data.notes,
         "seller": current_user.real_name or current_user.username,
         "timestamp": datetime.now().isoformat()
     }
 
-    # 5. 调用智能合约记录销售
+    # 5. 调用智能合约记录上架
     success, tx_hash, block_number = blockchain_client.add_record(
         trace_code=product.trace_code,
         stage=3,  # ProductStage.SELLER
-        action=8,  # RecordAction.SELL
+        action=8,  # RecordAction.SELL（复用 sell action 表示上架）
         data=json.dumps(chain_data, ensure_ascii=False),
-        remark=f"销售 {sell_data.quantity} {product.unit} 给 {sell_data.buyer_name}",
+        remark=f"上架: {sell_data.buyer_name}, 价格: {sell_data.buyer_phone}",
         operator_name=current_user.real_name or current_user.username
     )
 
     if not success:
         raise HTTPException(status_code=500, detail="区块链上链失败")
 
-    # 6. 如果全部售完，转移产品到 SOLD 阶段
-    is_fully_sold = (sell_data.quantity >= available_quantity)
-
-    if is_fully_sold:
-        # 转移到已售出阶段
-        transfer_data = {
-            "from_stage": "seller",
-            "to_stage": "sold",
-            "reason": "产品已售完",
-            "quantity": sell_data.quantity
-        }
-
-        transfer_success, transfer_tx_hash, transfer_block = blockchain_client.transfer_product(
-            trace_code=product.trace_code,
-            new_holder=current_user.blockchain_address or current_user.username,
-            new_stage="sold",
-            data=json.dumps(transfer_data, ensure_ascii=False),
-            remark=f"销售商转移已售产品",
-            operator_name=current_user.real_name or current_user.username
-        )
-
-        if not transfer_success:
-            raise HTTPException(status_code=500, detail="转移产品状态失败")
-
-        # 更新产品状态
-        product.current_stage = ProductStage.SOLD
-        product.tx_hash = transfer_tx_hash
-        product.block_number = transfer_block
-
-        final_tx_hash = transfer_tx_hash
-        final_block_number = transfer_block
-    else:
-        final_tx_hash = tx_hash
-        final_block_number = block_number
-
-    product.updated_at = datetime.now()
-
-    # 7. 创建销售记录
+    # 6. 创建上架记录（产品状态保持 SELLER 阶段不变）
     record = ProductRecord(
         product_id=product.id,
         stage=ProductStage.SELLER,
         action=RecordAction.SELL,
         data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"销售 {sell_data.quantity} {product.unit} 给 {sell_data.buyer_name}",
+        remark=f"上架位置: {sell_data.buyer_name}, 价格: ¥{sell_data.buyer_phone}",
         operator_id=current_user.id,
         operator_name=current_user.real_name or current_user.username,
-        tx_hash=final_tx_hash,
-        block_number=final_block_number
+        tx_hash=tx_hash,
+        block_number=block_number
     )
     db.add(record)
     db.commit()
     db.refresh(record)
 
     return {
-        "message": "销售成功",
+        "message": "上架成功",
         "product_id": product.id,
         "trace_code": product.trace_code,
         "quantity": sell_data.quantity,
-        "buyer_name": sell_data.buyer_name,
-        "is_fully_sold": is_fully_sold,
-        "remaining_quantity": available_quantity - sell_data.quantity,
-        "tx_hash": final_tx_hash,
-        "block_number": final_block_number
+        "shelf_location": sell_data.buyer_name,
+        "price": sell_data.buyer_phone,
+        "tx_hash": tx_hash,
+        "block_number": block_number
     }
 
 

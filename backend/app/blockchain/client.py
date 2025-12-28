@@ -24,6 +24,28 @@ class FiscoBcosClient:
         self.contract_address = CONTRACT_ADDRESS
         self.console_path = CONSOLE_PATH
         self.session = requests.Session()
+        self._clean_problematic_pem_files()
+
+    def _clean_problematic_pem_files(self):
+        """
+        清除 Console 自动生成的有问题的 PEM 文件
+        这些文件会导致 Console 报错: "encoded key spec not recognized"
+        """
+        import glob
+        ecdsa_dir = os.path.join("/home/pdm/fisco/console/account", "ecdsa")
+        pattern = os.path.join(ecdsa_dir, "0x0000000000000000000000000000000000000*.pem")
+        try:
+            for pem_file in glob.glob(pattern):
+                try:
+                    os.remove(pem_file)
+                    # 同时删除对应的 .pub 文件
+                    pub_file = pem_file + ".pub"
+                    if os.path.exists(pub_file):
+                        os.remove(pub_file)
+                except:
+                    pass
+        except:
+            pass
 
     def _rpc_call(self, method: str, params: list) -> Dict[str, Any]:
         """执行 RPC 调用"""
@@ -61,6 +83,9 @@ class FiscoBcosClient:
         执行 Console 命令
         返回: (成功标志, stdout, stderr)
         """
+        # 每次执行命令前清理有问题的pem文件
+        self._clean_problematic_pem_files()
+
         try:
             # 切换到 console 目录执行
             result = subprocess.run(

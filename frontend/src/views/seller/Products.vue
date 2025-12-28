@@ -1,11 +1,11 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '../../store/user'
 import ChainConfirm from '../../components/common/ChainConfirm.vue'
 import ChainVerify from '../../components/common/ChainVerify.vue'
 import TraceCode from '../../components/common/TraceCode.vue'
-import * as sellerApi from '../../api/seller'
+import { sellerApi } from '../../api/seller'
 
 const userStore = useUserStore()
 
@@ -37,8 +37,16 @@ const currentList = computed(() => {
   return []
 })
 
+// 监听 tab 切换，切换到上架记录时加载数据
+watch(activeTab, async (newTab) => {
+  if (newTab === 'sold' && soldProducts.value.length === 0) {
+    await fetchSoldProducts()
+  }
+})
+
 // ==================== 入库功能 ====================
 const stockInVisible = ref(false)
+const stockInConfirmVisible = ref(false)
 const stockInForm = ref({
   productId: null,
   productName: '',
@@ -61,7 +69,14 @@ const openStockIn = (product) => {
   stockInVisible.value = true
 }
 
-const onStockInConfirm = async () => {
+const onStockInConfirm = () => {
+  if (!stockInForm.value.productId) return
+  // 关闭表单对话框，打开确认对话框
+  stockInVisible.value = false
+  stockInConfirmVisible.value = true
+}
+
+const onStockInChainConfirm = async () => {
   if (!stockInForm.value.productId) return
 
   stockInRef.value?.setLoading()
@@ -80,7 +95,7 @@ const onStockInConfirm = async () => {
     stockInRef.value?.setSuccess(result)
     ElMessage.success('入库成功')
 
-    stockInVisible.value = false
+    stockInConfirmVisible.value = false
     await fetchInventoryProducts()
     await fetchStatistics()
   } catch (error) {
@@ -88,7 +103,7 @@ const onStockInConfirm = async () => {
   }
 }
 
-// ==================== 销售功能 ====================
+// ==================== 上架功能 ====================
 const sellVisible = ref(false)
 const sellConfirmVisible = ref(false)
 const sellForm = ref({
@@ -98,8 +113,8 @@ const sellForm = ref({
   quantity: null,
   availableQuantity: null,
   unit: '',
-  buyerName: '',
-  buyerPhone: '',
+  price: null,
+  shelfLocation: '',
   notes: ''
 })
 const sellRef = ref(null)
@@ -109,11 +124,11 @@ const openSell = (product) => {
     productId: product.id,
     productName: product.name,
     traceCode: product.trace_code,
-    quantity: null,
+    quantity: product.available_quantity,
     availableQuantity: product.available_quantity,
     unit: product.unit,
-    buyerName: '',
-    buyerPhone: '',
+    price: null,
+    shelfLocation: '',
     notes: ''
   }
   sellVisible.value = true
@@ -122,18 +137,13 @@ const openSell = (product) => {
 const onSellConfirm = async () => {
   if (!sellForm.value.productId) return
 
-  if (!sellForm.value.quantity || sellForm.value.quantity <= 0) {
-    ElMessage.warning('请输入销售数量')
+  if (!sellForm.value.price || sellForm.value.price <= 0) {
+    ElMessage.warning('请输入销售单价')
     return
   }
 
-  if (sellForm.value.quantity > sellForm.value.availableQuantity) {
-    ElMessage.warning(`销售数量不能超过可用库存 (${sellForm.value.availableQuantity} ${sellForm.value.unit})`)
-    return
-  }
-
-  if (!sellForm.value.buyerName) {
-    ElMessage.warning('请输入买家名称')
+  if (!sellForm.value.shelfLocation) {
+    ElMessage.warning('请输入上架位置')
     return
   }
 
@@ -153,29 +163,22 @@ const onSellChainConfirm = async () => {
       {
         product_id: sellForm.value.productId,
         quantity: sellForm.value.quantity,
-        buyer_name: sellForm.value.buyerName,
-        buyer_phone: sellForm.value.buyerPhone,
+        buyer_name: sellForm.value.shelfLocation,
+        buyer_phone: String(sellForm.value.price),
         notes: sellForm.value.notes
       }
     )
 
     sellRef.value?.setSuccess(result)
-    ElMessage.success('销售成功')
+    ElMessage.success('上架成功')
 
     sellConfirmVisible.value = false
 
-    if (result.is_fully_sold) {
-      // 全部售完，刷新库存列表
-      await fetchInventoryProducts()
-    } else {
-      // 部分销售，更新数量
-      await fetchInventoryProducts()
-    }
-
+    // 上架成功后刷新上架记录列表
     await fetchSoldProducts()
     await fetchStatistics()
   } catch (error) {
-    sellRef.value?.setError(error.response?.data?.detail || '销售失败')
+    sellRef.value?.setError(error.response?.data?.detail || '上架失败')
   }
 }
 
@@ -232,7 +235,7 @@ const getActionLabel = (action) => {
     start_inspect: '开始检测',
     inspect: '质量检测',
     stock_in: '产品入库',
-    sell: '产品销售',
+    sell: '产品上架',
     amend: '修正信息'
   }
   return map[actionLower] || action
@@ -243,7 +246,7 @@ const getStatusTag = (product) => {
   if (!product.warehouse || product.warehouse === '未入库') {
     return { type: 'warning', text: '待入库' }
   }
-  return { type: 'success', text: '在售' }
+  return { type: 'success', text: '已上架' }
 }
 
 // ==================== 数据加载 ====================
@@ -292,7 +295,7 @@ onMounted(() => {
     <div class="page-header">
       <h2>
         <el-icon><Shop /></el-icon>
-        销售管理
+        库存与上架管理
       </h2>
       <div class="statistics">
         <div class="stat-item">
@@ -301,11 +304,11 @@ onMounted(() => {
         </div>
         <div class="stat-item">
           <span class="stat-value">{{ statistics.sold_count }}</span>
-          <span class="stat-label">销售记录</span>
+          <span class="stat-label">上架记录</span>
         </div>
         <div class="stat-item">
           <span class="stat-value">{{ statistics.total_sales_quantity }}</span>
-          <span class="stat-label">销售总量</span>
+          <span class="stat-label">上架总量</span>
         </div>
       </div>
     </div>
@@ -379,7 +382,7 @@ onMounted(() => {
                 :disabled="!product.warehouse || product.warehouse === '未入库'"
               >
                 <el-icon><ShoppingCart /></el-icon>
-                销售
+                上架
               </el-button>
               <el-button
                 type="info"
@@ -394,31 +397,45 @@ onMounted(() => {
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="销售记录" name="sold">
+      <el-tab-pane label="上架记录" name="sold">
         <div v-if="loading" class="loading-state">
           <el-icon class="is-loading"><Loading /></el-icon>
           <span>加载中...</span>
         </div>
         <div v-else-if="currentList.length === 0" class="empty-state">
           <el-icon><Box /></el-icon>
-          <span>暂无销售记录</span>
+          <span>暂无上架记录</span>
         </div>
         <el-table v-else :data="currentList" stripe>
-          <el-table-column prop="trace_code" label="溯源码" width="200" />
+          <el-table-column prop="trace_code" label="溯源码" width="180" />
           <el-table-column prop="name" label="产品名称" />
-          <el-table-column label="销售数量" width="150">
+          <el-table-column label="上架数量" width="120">
             <template #default="scope">
               {{ scope.row.quantity }} {{ scope.row.unit }}
             </template>
           </el-table-column>
-          <el-table-column prop="buyer_name" label="买家" />
-          <el-table-column label="销售时间" width="180">
+          <el-table-column label="价格" width="120">
             <template #default="scope">
-              {{ formatTime(scope.row.sell_time) }}
+              ¥{{ scope.row.price || '-' }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" fixed="right">
+          <el-table-column prop="shelf_location" label="上架位置" width="150" />
+          <el-table-column label="上架时间" width="160">
             <template #default="scope">
+              {{ formatTime(scope.row.listing_time) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="180" fixed="right">
+            <template #default="scope">
+              <el-button
+                type="info"
+                link
+                size="small"
+                @click="viewDetail(scope.row)"
+              >
+                <el-icon><View /></el-icon>
+                详情
+              </el-button>
               <el-button
                 v-if="scope.row.tx_hash"
                 type="primary"
@@ -435,7 +452,7 @@ onMounted(() => {
       </el-tab-pane>
     </el-tabs>
 
-    <!-- 入库对话框 -->
+    <!-- 入库表单对话框 -->
     <el-dialog v-model="stockInVisible" title="产品入库" width="500px">
       <el-form :model="stockInForm" label-width="100px">
         <el-form-item label="产品名称">
@@ -477,7 +494,7 @@ onMounted(() => {
 
     <!-- 入库确认弹窗 -->
     <ChainConfirm
-      v-model:visible="stockInVisible"
+      v-model:visible="stockInConfirmVisible"
       title="确认入库"
       :data="{
         product: stockInForm.productName || '',
@@ -490,40 +507,33 @@ onMounted(() => {
         warehouse: '仓库位置'
       }"
       :loading="false"
-      @confirm="onStockInConfirm"
+      @confirm="onStockInChainConfirm"
       ref="stockInRef"
     />
 
-    <!-- 销售对话框 -->
-    <el-dialog v-model="sellVisible" title="产品销售" width="500px">
+    <!-- 上架对话框 -->
+    <el-dialog v-model="sellVisible" title="产品上架" width="500px">
       <el-form :model="sellForm" label-width="100px">
         <el-form-item label="产品名称">
           <span>{{ sellForm.productName }}</span>
           <span class="form-hint">({{ sellForm.traceCode }})</span>
         </el-form-item>
-        <el-form-item label="可用库存">
-          <span class="stock-info">{{ sellForm.availableQuantity }} {{ sellForm.unit }}</span>
+        <el-form-item label="上架数量">
+          <span class="stock-info">{{ sellForm.quantity }} {{ sellForm.unit }}</span>
         </el-form-item>
-        <el-form-item label="销售数量" required>
+        <el-form-item label="销售单价" required>
           <el-input-number
-            v-model="sellForm.quantity"
-            :min="0.1"
-            :max="sellForm.availableQuantity"
+            v-model="sellForm.price"
+            :min="0.01"
             :precision="2"
             controls-position="right"
           />
-          <span class="unit-hint">{{ sellForm.unit }}</span>
+          <span class="unit-hint">元 / {{ sellForm.unit }}</span>
         </el-form-item>
-        <el-form-item label="买家名称" required>
+        <el-form-item label="上架位置" required>
           <el-input
-            v-model="sellForm.buyerName"
-            placeholder="请输入买家名称"
-          />
-        </el-form-item>
-        <el-form-item label="买家电话">
-          <el-input
-            v-model="sellForm.buyerPhone"
-            placeholder="可选输入"
+            v-model="sellForm.shelfLocation"
+            placeholder="请输入上架位置，如：A区-1号货架"
           />
         </el-form-item>
         <el-form-item label="备注">
@@ -543,21 +553,21 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 销售确认弹窗 -->
+    <!-- 上架确认弹窗 -->
     <ChainConfirm
       v-model:visible="sellConfirmVisible"
-      title="确认销售上链"
+      title="确认上架上链"
       :data="{
         product: sellForm.productName || '',
         quantity: `${sellForm.quantity} ${sellForm.unit}`,
-        buyerName: sellForm.buyerName,
-        buyerPhone: sellForm.buyerPhone || '无'
+        price: `¥${sellForm.price} / ${sellForm.unit}`,
+        location: sellForm.shelfLocation
       }"
       :data-labels="{
         product: '产品名称',
-        quantity: '销售数量',
-        buyerName: '买家名称',
-        buyerPhone: '买家电话'
+        quantity: '上架数量',
+        price: '销售单价',
+        location: '上架位置'
       }"
       :loading="false"
       @confirm="onSellChainConfirm"
