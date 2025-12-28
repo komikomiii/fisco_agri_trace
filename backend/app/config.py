@@ -1,6 +1,7 @@
 """
 Application Configuration
 """
+import os
 from functools import lru_cache
 from dataclasses import dataclass
 
@@ -37,7 +38,7 @@ class Settings:
     FISCO_GROUP_ID: int = 1
 
     # AI API
-    GLM_API_KEY: str = "35197c7f7faf458792e9d565e14a51a7.Zbtq3C0Jf4xBL86G"
+    GLM_API_KEY: str = os.getenv("GLM_API_KEY", "")
 
 
 @lru_cache()
