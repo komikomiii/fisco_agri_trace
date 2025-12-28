@@ -1,14 +1,16 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElDialog } from 'element-plus'
 import {
   Connection,
   CircleClose,
   CircleCheck,
   ArrowLeft,
   ArrowDown,
-  InfoFilled
+  InfoFilled,
+  Document,
+  CopyDocument
 } from '@element-plus/icons-vue'
 import { blockchainApi } from '../../api/blockchain'
 
@@ -22,6 +24,59 @@ const verified = ref(false)
 
 // 详情展开状态
 const expandedRecordId = ref(null)
+
+// 链上数据弹窗状态
+const chainDataDialogVisible = ref(false)
+const selectedChainRecord = ref(null)
+
+// 打开链上数据详情弹窗
+const openChainDataDialog = (record) => {
+  console.log('Opening chain data dialog for record:', record)
+  selectedChainRecord.value = record
+  chainDataDialogVisible.value = true
+  console.log('Dialog visible:', chainDataDialogVisible.value)
+}
+
+// 关闭弹窗
+const closeChainDataDialog = () => {
+  chainDataDialogVisible.value = false
+  selectedChainRecord.value = null
+}
+
+// 复制到剪贴板
+const copyToClipboard = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制到剪贴板')
+  } catch (e) {
+    ElMessage.error('复制失败')
+  }
+}
+
+// 获取原始链上记录数据
+const getRawChainRecord = (record) => {
+  console.log('getRawChainRecord called with:', record)
+  console.log('traceData.value?.chain_records:', traceData.value?.chain_records)
+  if (!traceData.value?.chain_records) return null
+  const found = traceData.value.chain_records.find(r => {
+    const match = (r.recordId || r.index) === record.id
+    console.log(`Comparing ${r.recordId || r.index} with ${record.id}:`, match)
+    return match
+  })
+  console.log('Found record:', found)
+  return found
+}
+
+// 格式化 data JSON 数据
+const formatDataJson = (data) => {
+  if (!data) return '{}'
+  try {
+    const parsed = typeof data === 'string' ? JSON.parse(data) : data
+    return JSON.stringify(parsed, null, 2)
+  } catch (e) {
+    return String(data)
+  }
+}
 
 // 获取产品链上数据
 const fetchTraceData = async () => {
@@ -83,6 +138,36 @@ const stageConfig = {
   4: { name: '已售出', icon: '✅', color: '#52c41a' }
 }
 
+// 根据产品类别/名称获取对应的 emoji 图片
+const getProductEmoji = (name, category) => {
+  const n = (name + ' ' + (category || '')).toLowerCase()
+  if (n.includes('苹果') || n.includes('果')) return '🍎'
+  if (n.includes('石榴')) return '🌰'
+  if (n.includes('橙') || n.includes('橘')) return '🍊'
+  if (n.includes('香蕉')) return '🍌'
+  if (n.includes('葡萄')) return '🍇'
+  if (n.includes('西瓜')) return '🍉'
+  if (n.includes('番茄') || n.includes('茄')) return '🍅'
+  if (n.includes('胡萝卜')) return '🥕'
+  if (n.includes('玉米')) return '🌽'
+  if (n.includes('菜') || n.includes('芹')) return '🥬'
+  if (n.includes('蛋')) return '🥚'
+  if (n.includes('奶') || n.includes('牛')) return '🥛'
+  if (n.includes('麦') || n.includes('米') || n.includes('粮')) return '🌾'
+  if (n.includes('鱼')) return '🐟'
+  if (n.includes('肉')) return '🥩'
+  return '📦'
+}
+
+// 产品图片
+const productEmoji = computed(() => {
+  if (!traceData.value?.product_info) return '📦'
+  return getProductEmoji(
+    traceData.value.product_info.name || '',
+    traceData.value.product_info.category || ''
+  )
+})
+
 // 操作类型映射
 const actionConfig = {
   'create': { name: '创建产品', desc: '首次创建产品信息' },
@@ -139,20 +224,50 @@ const timelineData = computed(() => {
               inspect_result: '检测结论',
               notes: '备注',
               batch_no: '批次号',
-              harvest_date: '采收日期'
+              harvest_date: '采收日期',
+              received_quantity: '接收数量',
+              received_at: '接收时间',
+              process_date: '加工时间',
+              inspection_type: '检测类型',
+              inspector: '检测员',
+              seller: '销售方'
             }
+            // 格式化值
+            let formattedValue = value
+            if (typeof value === 'boolean') {
+              formattedValue = value ? '是' : '否'
+            } else if (key.includes('date') || key.includes('time')) {
+              // 尝试格式化日期
+              try {
+                const d = new Date(value)
+                if (!isNaN(d.getTime())) {
+                  formattedValue = d.toLocaleString('zh-CN')
+                }
+              } catch (e) {
+                formattedValue = String(value)
+              }
+            } else if (key === 'quantity' || key === 'result_quantity' || key === 'received_quantity') {
+              formattedValue = value + ' kg'
+            }
+
             if (value !== null && value !== '' && value !== undefined) {
               dataDetails.push({
                 label: labelMap[key] || key,
-                value: String(value)
+                value: String(formattedValue)
               })
             }
           }
         }
       } catch (e) {
-        // 解析失败
+        // 解析失败，data 可能是普通字符串
+        if (record.data && typeof record.data === 'string') {
+          dataDetails.push({ label: '数据', value: record.data })
+        }
       }
     }
+
+    // 获取 txHash（如果有）
+    const txHash = record.txHash || null
 
     return {
       id: record.recordId || record.index || index,
@@ -168,7 +283,7 @@ const timelineData = computed(() => {
       remark: record.remark || '',
       dataDetails: dataDetails,
       isAmend: actionKey === 'amend' || actionKey === 5,
-      txHash: record.txHash || null
+      txHash: txHash
     }
   })
 })
@@ -256,7 +371,7 @@ const unwatch = router.afterEach((to) => {
 
               <div class="product-image">
                 <div class="image-placeholder">
-                  <span class="product-emoji">🍎</span>
+                  <span class="product-emoji">{{ productEmoji }}</span>
                 </div>
               </div>
 
@@ -368,11 +483,35 @@ const unwatch = router.afterEach((to) => {
                         </div>
                       </div>
 
-                      <div class="detail-section" v-if="record.txHash">
-                        <h4>链上信息</h4>
-                        <div class="chain-hash">
-                          <span class="hash-label">交易哈希</span>
-                          <span class="hash-value mono">{{ record.txHash }}</span>
+                      <!-- 链上信息 - 始终显示 -->
+                      <div class="detail-section chain-info-section">
+                        <div class="chain-header-row">
+                          <h4>
+                            <span class="chain-icon">⛓</span>
+                            区块链存证信息
+                          </h4>
+                          <button class="view-raw-btn" @click.stop="openChainDataDialog(record)">
+                            <el-icon><Document /></el-icon>
+                            <span>查看完整数据</span>
+                          </button>
+                        </div>
+                        <div class="chain-info-grid">
+                          <div class="chain-info-item" v-if="record.txHash">
+                            <span class="chain-label">交易哈希</span>
+                            <span class="chain-value mono">{{ record.txHash }}</span>
+                          </div>
+                          <div class="chain-info-item">
+                            <span class="chain-label">记录ID</span>
+                            <span class="chain-value mono">{{ record.id }}</span>
+                          </div>
+                          <div class="chain-info-item">
+                            <span class="chain-label">上链时间</span>
+                            <span class="chain-value">{{ record.timestamp }}</span>
+                          </div>
+                          <div class="chain-info-item">
+                            <span class="chain-label">操作者</span>
+                            <span class="chain-value">{{ record.operator }}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -387,6 +526,114 @@ const unwatch = router.afterEach((to) => {
         </div>
       </template>
     </div>
+
+    <!-- 链上数据详情弹窗 -->
+    <el-dialog
+      v-model="chainDataDialogVisible"
+      title="区块链原始数据"
+      width="600px"
+      :close-on-click-modal="false"
+      class="chain-data-dialog"
+    >
+      <div v-if="selectedChainRecord" class="chain-data-content">
+        <!-- 获取原始记录 -->
+        <div v-if="getRawChainRecord(selectedChainRecord)">
+          <div class="chain-data-header">
+            <span class="chain-data-icon">⛓</span>
+            <span class="chain-data-title">完整链上记录</span>
+          </div>
+
+          <div class="raw-data-sections">
+            <!-- 基本信息 -->
+            <div class="data-section">
+              <div class="data-section-title">基本信息</div>
+              <div class="data-row">
+                <span class="data-key">索引 (index)</span>
+                <span class="data-value">{{ getRawChainRecord(selectedChainRecord).index ?? '-' }}</span>
+              </div>
+              <div class="data-row">
+                <span class="data-key">记录ID (recordId)</span>
+                <span class="data-value mono">{{ getRawChainRecord(selectedChainRecord).recordId ?? '-' }}</span>
+              </div>
+            </div>
+
+            <!-- 阶段与操作 -->
+            <div class="data-section">
+              <div class="data-section-title">阶段与操作</div>
+              <div class="data-row">
+                <span class="data-key">阶段 (stage)</span>
+                <span class="data-value stage-badge" :style="{ background: selectedChainRecord.stageColor + '20', color: selectedChainRecord.stageColor }">
+                  {{ getRawChainRecord(selectedChainRecord).stage ?? '-' }}
+                </span>
+              </div>
+              <div class="data-row">
+                <span class="data-key">操作 (action)</span>
+                <span class="data-value">{{ getRawChainRecord(selectedChainRecord).action ?? '-' }}</span>
+              </div>
+            </div>
+
+            <!-- 数据内容 -->
+            <div class="data-section">
+              <div class="data-section-title">数据内容 (data)</div>
+              <div class="json-data-box">
+                <pre class="json-content">{{ formatDataJson(getRawChainRecord(selectedChainRecord).data) }}</pre>
+                <button class="copy-btn" @click="copyToClipboard(formatDataJson(getRawChainRecord(selectedChainRecord).data))">
+                  <el-icon><CopyDocument /></el-icon>
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <!-- 操作信息 -->
+            <div class="data-section">
+              <div class="data-section-title">操作信息</div>
+              <div class="data-row">
+                <span class="data-key">操作者 (operator)</span>
+                <span class="data-value">{{ getRawChainRecord(selectedChainRecord).operator ?? '-' }}</span>
+              </div>
+              <div class="data-row">
+                <span class="data-key">操作者名称 (operatorName)</span>
+                <span class="data-value">{{ getRawChainRecord(selectedChainRecord).operatorName ?? '-' }}</span>
+              </div>
+              <div class="data-row">
+                <span class="data-key">时间戳 (timestamp)</span>
+                <span class="data-value mono">{{ getRawChainRecord(selectedChainRecord).timestamp ?? '-' }}</span>
+              </div>
+              <div class="data-row">
+                <span class="data-key">格式化时间</span>
+                <span class="data-value">{{ selectedChainRecord.timestamp }}</span>
+              </div>
+            </div>
+
+            <!-- 交易信息 -->
+            <div class="data-section" v-if="getRawChainRecord(selectedChainRecord).txHash">
+              <div class="data-section-title">交易信息</div>
+              <div class="data-row full-width">
+                <span class="data-key">交易哈希 (txHash)</span>
+                <span class="data-value mono">{{ getRawChainRecord(selectedChainRecord).txHash }}</span>
+              </div>
+            </div>
+
+            <!-- 备注 -->
+            <div class="data-section" v-if="getRawChainRecord(selectedChainRecord).remark">
+              <div class="data-section-title">备注 (remark)</div>
+              <div class="data-row full-width">
+                <span class="data-value remark-text">{{ getRawChainRecord(selectedChainRecord).remark }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="no-data">
+          未找到链上数据
+        </div>
+      </div>
+
+      <template #footer>
+        <span style="display: flex; justify-content: flex-end;">
+          <el-button @click="closeChainDataDialog">关闭</el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -878,6 +1125,53 @@ const unwatch = router.afterEach((to) => {
   font-size: 13px;
 }
 
+/* 链上信息区域 */
+.chain-info-section {
+  background: linear-gradient(135deg, #f6ffed, #fffbe6);
+  border: 1px solid #b7eb8f;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.chain-info-section h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #52c41a;
+  margin-bottom: 12px;
+}
+
+.chain-icon {
+  font-size: 16px;
+}
+
+.chain-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.chain-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 8px;
+}
+
+.chain-label {
+  font-size: 11px;
+  color: #52c41a;
+  font-weight: 600;
+}
+
+.chain-value {
+  font-size: 13px;
+  color: #333;
+  word-break: break-all;
+}
+
 .chain-hash {
   display: flex;
   flex-direction: column;
@@ -928,5 +1222,188 @@ const unwatch = router.afterEach((to) => {
   padding: 12px 24px;
   border-radius: 12px;
   display: inline-block;
+}
+
+/* 链上信息头部行 */
+.chain-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.chain-header-row h4 {
+  margin: 0;
+}
+
+/* 查看完整数据按钮 */
+.view-raw-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: white;
+  border: 1px solid #b7eb8f;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #52c41a;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.view-raw-btn:hover {
+  background: #f6ffed;
+  border-color: #95de64;
+}
+
+/* 弹窗样式 */
+.chain-data-dialog .chain-data-content {
+  padding: 0;
+}
+
+.chain-data-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+  border-bottom: 2px solid #f0f0f0;
+}
+
+.chain-data-icon {
+  font-size: 24px;
+}
+
+.chain-data-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.raw-data-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.data-section {
+  background: #fafafa;
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.data-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #52c41a;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+.data-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.data-row:last-child {
+  border-bottom: none;
+}
+
+.data-row.full-width {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.data-key {
+  font-size: 13px;
+  color: #666;
+  font-weight: 500;
+}
+
+.data-value {
+  font-size: 13px;
+  color: #333;
+  font-weight: 600;
+  max-width: 60%;
+  text-align: right;
+  word-break: break-all;
+}
+
+.data-row.full-width .data-value {
+  max-width: 100%;
+  text-align: left;
+}
+
+.data-value.mono {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+}
+
+.data-value.remark-text {
+  background: white;
+  padding: 10px 14px;
+  border-radius: 8px;
+  width: 100%;
+}
+
+.stage-badge {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* JSON 数据框 */
+.json-data-box {
+  position: relative;
+  background: #1a1a1a;
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 8px;
+}
+
+.json-content {
+  margin: 0;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 12px;
+  color: #a9b7c6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  font-size: 11px;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.copy-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.no-data {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+  font-size: 14px;
 }
 </style>
