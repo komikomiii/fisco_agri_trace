@@ -427,7 +427,7 @@ async def invalidate_product(
     }
 
 
-@router.get("/products/invalidated", response_model=List[ProductResponse])
+@router.get("/invalidated")
 async def get_invalidated_products(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -440,7 +440,31 @@ async def get_invalidated_products(
         Product.status == ProductStatus.INVALIDATED
     ).order_by(Product.invalidated_at.desc()).all()
 
-    return products
+    # 手动序列化以避免Pydantic验证问题
+    result = []
+    for p in products:
+        result.append({
+            "id": p.id,
+            "trace_code": p.trace_code,
+            "name": p.name,
+            "category": p.category,
+            "origin": p.origin,
+            "batch_no": p.batch_no,
+            "quantity": p.quantity,
+            "unit": p.unit,
+            "harvest_date": p.harvest_date.isoformat() if p.harvest_date else None,
+            "status": p.status.value if p.status else None,
+            "current_stage": p.current_stage.value if p.current_stage else None,
+            "tx_hash": p.tx_hash,
+            "block_number": p.block_number,
+            "invalidated_at": p.invalidated_at.isoformat() if p.invalidated_at else None,
+            "invalidated_by": p.invalidated_by,
+            "invalidated_reason": p.invalidated_reason,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None
+        })
+
+    return result
 
 
 @router.post("/products/{product_id}/amend", response_model=RecordResponse)

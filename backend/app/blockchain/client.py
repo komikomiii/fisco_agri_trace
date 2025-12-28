@@ -333,6 +333,7 @@ class FiscoBcosClient:
                 "recordCountNum": result[10]
             }
 
+        # 如果 RPC 调用失败,返回 None(会触发API回退到使用数据库或显示错误)
         return None
 
     def verify_trace_code(self, trace_code: str) -> bool:

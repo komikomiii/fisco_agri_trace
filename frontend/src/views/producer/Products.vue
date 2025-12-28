@@ -54,15 +54,21 @@ const fetchProducts = async () => {
 
   loading.value = true
   try {
-    // 总是获取所有数据，然后前端过滤
-    const data = await producerApi.getProducts(null)
-    products.value = data
+    // 同时获取正常产品和已作废产品
+    const [normalProducts, invalidatedProducts] = await Promise.all([
+      producerApi.getProducts(null),
+      producerApi.getInvalidatedProducts()
+    ])
+
+    // 合并所有产品
+    const allProducts = [...normalProducts, ...invalidatedProducts]
+    products.value = allProducts
 
     // 更新各状态数量
-    statusCounts.draft = data.filter(p => p.status === 'DRAFT').length
-    statusCounts.on_chain = data.filter(p => p.status === 'ON_CHAIN').length
-    statusCounts.invalidated = data.filter(p => p.status === 'INVALIDATED').length
-    statusCounts.all = data.length
+    statusCounts.draft = normalProducts.filter(p => p.status === 'DRAFT').length
+    statusCounts.on_chain = normalProducts.filter(p => p.status === 'ON_CHAIN').length
+    statusCounts.invalidated = invalidatedProducts.length
+    statusCounts.all = allProducts.length
   } catch (error) {
     ElMessage.error('获取产品列表失败')
     console.error(error)

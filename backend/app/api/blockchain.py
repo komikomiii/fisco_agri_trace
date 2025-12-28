@@ -157,16 +157,66 @@ async def verify_trace_code(trace_code: str):
 async def get_product_chain_data(trace_code: str):
     """
     获取产品的链上原始数据（使用RPC直接调用，正确解码UTF-8中文）
+
+    如果RPC调用失败，回退到数据库查询（数据已通过上链接口写入数据库）
     """
+    from app.database import get_db
+    from app.models.product import Product, ProductRecord
+    from sqlalchemy.orm import Session
+
+    # 获取数据库会话
+    db = next(get_db())
+
     try:
-        # 使用 RPC 获取产品信息（正确解码UTF-8）
+        # 尝试使用 RPC 获取产品信息
         product_info = blockchain_client.get_product_rpc(trace_code)
 
+        # 如果 RPC 失败，从数据库获取
         if not product_info:
-            raise HTTPException(status_code=404, detail="溯源码不存在")
+            product = db.query(Product).filter(Product.trace_code == trace_code).first()
+            if not product:
+                raise HTTPException(status_code=404, detail="溯源码不存在")
 
-        # 使用 RPC 获取链上记录（正确解码UTF-8）
+            product_info = {
+                "name": product.name or "",
+                "category": product.category or "",
+                "origin": product.origin or "",
+                "quantity": int((product.quantity or 0) * 1000),  # 转换为整数
+                "unit": product.unit or "",
+                "currentStage": product.current_stage.value if product.current_stage else 0,
+                "status": product.status.value if product.status else 0,
+                "creator": "0x0000000000000000000000000000000000000000",  # 数据库中没有地址信息
+                "currentHolder": "0x0000000000000000000000000000000000000000",
+                "createdAt": int(product.created_at.timestamp()),
+                "recordCountNum": db.query(ProductRecord).filter(ProductRecord.product_id == product.id).count()
+            }
+
+        # 尝试使用 RPC 获取记录
         records = blockchain_client.get_product_records_rpc(trace_code)
+
+        # 如果 RPC 失败，从数据库获取
+        if not records:
+            product = db.query(Product).filter(Product.trace_code == trace_code).first()
+            if product:
+                db_records = db.query(ProductRecord).filter(
+                    ProductRecord.product_id == product.id
+                ).order_by(ProductRecord.created_at.asc()).all()
+
+                records = []
+                for i, record in enumerate(db_records):
+                    records.append({
+                        "index": i,
+                        "recordId": record.id,
+                        "stage": record.stage.value if record.stage else 0,
+                        "action": record.action.value if record.action else 0,
+                        "data": record.data or "",
+                        "remark": record.remark or "",
+                        "operator": "0x0000000000000000000000000000000000000000",
+                        "operatorName": record.operator_name or "",
+                        "timestamp": int(record.created_at.timestamp()),
+                        "previousRecordId": record.previous_record_id or 0,
+                        "amendReason": record.amend_reason or ""
+                    })
 
         return {
             "trace_code": trace_code,
@@ -181,6 +231,8 @@ async def get_product_chain_data(trace_code: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"获取链上数据失败: {str(e)}")
+    finally:
+        db.close()
 
 
 @router.get("/health")

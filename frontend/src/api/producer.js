@@ -37,7 +37,7 @@ export const producerApi = {
 
   // 获取已作废产品列表
   getInvalidatedProducts() {
-    return api.get('/producer/products/invalidated')
+    return api.get('/producer/invalidated')
   },
 
   // 提交上链
