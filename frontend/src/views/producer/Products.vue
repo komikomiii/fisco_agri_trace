@@ -37,12 +37,15 @@ const searchForm = reactive({
 // 分类选项
 const categories = ['蔬菜', '水果', '粮食', '水产', '畜禽', '其他']
 
-// 状态映射
+// 状态映射 (支持后端返回的枚举值)
 const chainStatusMap = {
+  DRAFT: { label: '未上链', type: 'warning', icon: 'EditPen' },
+  ON_CHAIN: { label: '已上链', type: 'success', icon: 'CircleCheckFilled' },
+  INVALIDATED: { label: '已作废', type: 'info', icon: 'Delete' },
+  // 兼容前端小写格式
   draft: { label: '未上链', type: 'warning', icon: 'EditPen' },
-  pending: { label: '上链中', type: 'primary', icon: 'Loading' },
   on_chain: { label: '已上链', type: 'success', icon: 'CircleCheckFilled' },
-  terminated: { label: '已终止', type: 'danger', icon: 'CircleCloseFilled' }
+  invalidated: { label: '已作废', type: 'info', icon: 'Delete' }
 }
 
 // Tab 切换
@@ -640,6 +643,9 @@ const openChainVerify = (record) => {
 }
 
 const viewDetail = async (product) => {
+  console.log('viewDetail - product:', product)
+  console.log('viewDetail - trace_code:', product?.trace_code || product?.traceCode)
+
   detailChain.value = product
   detailDrawerVisible.value = true
 
@@ -902,15 +908,9 @@ const resetSearch = () => {
         </el-table-column>
         <el-table-column prop="status" label="状态" width="100" align="center">
           <template #default="{ row }">
-            <span class="tag-content">
-              <el-icon class="tag-icon" :class="chainStatusMap[row.status]?.type || 'info'">
-                <CircleCheckFilled v-if="row.status === 'ON_CHAIN'" />
-                <EditPen v-else-if="row.status === 'DRAFT'" />
-                <Loading v-else-if="row.status === 'pending'" class="is-loading" />
-                <CircleCloseFilled v-else />
-              </el-icon>
-              <span class="tag-text">{{ chainStatusMap[row.status]?.label || row.status }}</span>
-            </span>
+            <el-tag :type="chainStatusMap[row.status]?.type || 'info'" size="small">
+              {{ chainStatusMap[row.status]?.label || row.status }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="280" fixed="right">
@@ -959,6 +959,8 @@ const resetSearch = () => {
           layout="total, sizes, prev, pager, next, jumper"
           :total="filteredProducts.length"
           :page-sizes="[10, 20, 50]"
+          :prev-page-icon="ArrowLeft"
+          :next-page-icon="ArrowRight"
         />
       </div>
     </el-card>
@@ -1095,8 +1097,15 @@ const resetSearch = () => {
     >
       <template v-if="detailChain">
         <!-- 溯源码 -->
-        <div v-if="getTraceCode(detailChain)" class="detail-section">
-          <TraceCode :trace-code="getTraceCode(detailChain)" size="large" />
+        <div class="detail-section">
+          <TraceCode
+            v-if="getTraceCode(detailChain)"
+            :code="getTraceCode(detailChain)"
+            size="large"
+          />
+          <div v-else class="no-trace-code">
+            <el-empty description="暂无溯源码" :image-size="60" />
+          </div>
         </div>
 
         <!-- 基本信息 -->
@@ -1340,6 +1349,11 @@ const resetSearch = () => {
 /* 详情抽屉样式 */
 .detail-section {
   margin-bottom: 24px;
+}
+
+.no-trace-code {
+  padding: 20px 0;
+  text-align: center;
 }
 
 .section-header {
