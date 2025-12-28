@@ -21,6 +21,8 @@ const loading = ref(false)
 // 链上数据验证
 const chainVerifyVisible = ref(false)
 const verifyTraceCode = ref('')
+const verifyTxHash = ref('')
+const verifyBlockNumber = ref(null)
 
 // Tab 切换
 const activeTab = ref('pending')
@@ -324,7 +326,9 @@ const viewChainData = (product) => {
 
 // 打开链上验证
 const openChainVerify = (record) => {
+  verifyTxHash.value = record?.tx_hash || ''
   verifyTraceCode.value = detailProduct.value.trace_code
+  verifyBlockNumber.value = record?.block_number || null
   chainVerifyVisible.value = true
 }
 
@@ -417,6 +421,15 @@ const translateRemark = (remark) => {
     const chineseType = inspectionMap[type] || type
     return `送检: ${chineseType}`
   })
+
+  // 替换 "开始检测: quality" 为 "开始检测: 质量检测"
+  result = result.replace(/开始检测:\s*(\w+)/g, (match, type) => {
+    const chineseType = inspectionMap[type] || type
+    return `开始检测: ${chineseType}`
+  })
+
+  // 移除接收原料备注中的 "质量等级A/B/C" 信息（因为那时还未质检）
+  result = result.replace(/接收原料，质量等级：[ABC]/g, '接收原料')
 
   return result
 }
@@ -757,6 +770,8 @@ const getProductStatus = (chain) => {
     <ChainVerify
       v-model:visible="chainVerifyVisible"
       :trace-code="verifyTraceCode"
+      :tx-hash="verifyTxHash"
+      :block-number="verifyBlockNumber"
     />
   </div>
 </template>

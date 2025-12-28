@@ -213,7 +213,7 @@ async def receive_product(
         stage=ProductStage.PROCESSOR,
         action=RecordAction.RECEIVE,
         data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"接收，质检等级: {receive_data.quality}",
+        remark=f"接收原料",
         operator_id=current_user.id,
         operator_name=current_user.real_name or current_user.username,
         tx_hash=tx_hash,

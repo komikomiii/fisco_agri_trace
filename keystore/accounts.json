@@ -38,5 +38,20 @@
     "username": "质检1",
     "address": "0x1e1b016259E4C5a7c88e0DF81e69c093061d2f80",
     "keystore": "/home/pdm/DEV/komi-project/keystore/user_8.json"
+  },
+  "9": {
+    "username": "消费者1",
+    "address": "0xefBbC763863fB94c1b31F52e555cEfc6C15C4DB3",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_9.json"
+  },
+  "10": {
+    "username": "销售1",
+    "address": "0xF46C98952845804767dA4e921Af7B485b7d5fF59",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_10.json"
+  },
+  "11": {
+    "username": "test_user_1766908921",
+    "address": "0x00569913de5C024e2682d00699402739E8d1741E",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_11.json"
   }
 }
