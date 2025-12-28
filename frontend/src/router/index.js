@@ -36,12 +36,6 @@ const routes = [
         component: () => import('../views/producer/Products.vue'),
         meta: { title: '原料管理', role: 'producer' }
       },
-      {
-        path: 'producer/harvest',
-        name: 'ProducerHarvest',
-        component: () => import('../views/producer/Harvest.vue'),
-        meta: { title: '采收登记', role: 'producer' }
-      },
       // 加工商
       {
         path: 'processor/receive',
@@ -62,24 +56,12 @@ const routes = [
         component: () => import('../views/inspector/Pending.vue'),
         meta: { title: '待检产品', role: 'inspector' }
       },
-      {
-        path: 'inspector/reports',
-        name: 'InspectorReports',
-        component: () => import('../views/inspector/Reports.vue'),
-        meta: { title: '检测报告', role: 'inspector' }
-      },
       // 销售商
       {
         path: 'seller/inventory',
         name: 'SellerInventory',
         component: () => import('../views/seller/Products.vue'),
         meta: { title: '库存管理', role: 'seller' }
-      },
-      {
-        path: 'seller/sales',
-        name: 'SellerSales',
-        component: () => import('../views/seller/Sales.vue'),
-        meta: { title: '销售记录', role: 'seller' }
       },
       // 消费者
       {

@@ -31,20 +31,17 @@ const menuItems = computed(() => {
 
   const roleMenus = {
     producer: [
-      { path: '/dashboard/producer/products', icon: 'Grape', title: '原料管理' },
-      { path: '/dashboard/producer/harvest', icon: 'Calendar', title: '采收登记' }
+      { path: '/dashboard/producer/products', icon: 'Grape', title: '原料管理' }
     ],
     processor: [
       { path: '/dashboard/processor/receive', icon: 'Box', title: '原料接收' },
       { path: '/dashboard/processor/process', icon: 'SetUp', title: '加工记录' }
     ],
     inspector: [
-      { path: '/dashboard/inspector/pending', icon: 'Document', title: '待检产品' },
-      { path: '/dashboard/inspector/reports', icon: 'DataAnalysis', title: '检测报告' }
+      { path: '/dashboard/inspector/pending', icon: 'Document', title: '待检产品' }
     ],
     seller: [
-      { path: '/dashboard/seller/inventory', icon: 'GoodsFilled', title: '库存管理' },
-      { path: '/dashboard/seller/sales', icon: 'ShoppingCart', title: '销售记录' }
+      { path: '/dashboard/seller/inventory', icon: 'GoodsFilled', title: '库存管理' }
     ],
     consumer: [
       { path: '/dashboard/consumer/scan', icon: 'Camera', title: '扫码溯源' },
