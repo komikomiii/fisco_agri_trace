@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useProductStore } from '../../store/product'
+import { blockchainApi } from '../../api/blockchain'
 
 const router = useRouter()
 const productStore = useProductStore()
@@ -31,7 +32,7 @@ const getOrigin = (chain) => {
   return productStore.getMergedData(chain)?.origin || '-'
 }
 
-// 搜索溯源
+// 搜索溯源 - 调用真实 API
 const handleSearch = async () => {
   if (!traceCode.value.trim()) {
     ElMessage.warning('请输入溯源码')
@@ -40,25 +41,60 @@ const handleSearch = async () => {
 
   searching.value = true
 
-  // 模拟搜索延迟
-  await new Promise(resolve => setTimeout(resolve, 500))
+  try {
+    // 调用区块链 API 验证溯源码
+    const response = await blockchainApi.getProductChainData(traceCode.value.trim())
 
-  // 检查溯源码是否存在
-  const chain = productStore.productChains.find(c => c.traceCode === traceCode.value.trim())
+    if (response && response.exists) {
+      // 保存到历史记录
+      const history = JSON.parse(localStorage.getItem('trace_history') || '[]')
+      const existingIndex = history.findIndex(h => h.code === traceCode.value.trim())
+      const record = {
+        id: Date.now(),
+        code: traceCode.value.trim(),
+        name: response.product_info?.name || '未知产品',
+        origin: response.product_info?.origin || '-',
+        scanDate: new Date().toLocaleString('zh-CN'),
+        result: 'verified',
+        summary: null,
+        summaryStatus: 'none'
+      }
 
-  if (chain) {
-    // 跳转到简报页面
-    router.push(`/dashboard/consumer/report/${traceCode.value}`)
-  } else {
-    ElMessage.error('未找到该溯源码对应的产品信息')
+      if (existingIndex >= 0) {
+        history[existingIndex] = record
+      } else {
+        history.unshift(record)
+      }
+      localStorage.setItem('trace_history', JSON.stringify(history.slice(0, 20)))
+
+      // 跳转到公共溯源页面（不需要登录）
+      router.push(`/trace/${traceCode.value.trim()}`)
+    } else {
+      // 保存失败的记录
+      const history = JSON.parse(localStorage.getItem('trace_history') || '[]')
+      history.unshift({
+        id: Date.now(),
+        code: traceCode.value.trim(),
+        name: '未知产品',
+        origin: '-',
+        scanDate: new Date().toLocaleString('zh-CN'),
+        result: 'failed'
+      })
+      localStorage.setItem('trace_history', JSON.stringify(history.slice(0, 20)))
+
+      ElMessage.error('未找到该溯源码对应的产品信息')
+    }
+  } catch (error) {
+    console.error('查询溯源码失败:', error)
+    ElMessage.error('查询失败，请检查网络或稍后重试')
+  } finally {
+    searching.value = false
   }
-
-  searching.value = false
 }
 
-// 快捷查询
+// 快捷查询 - 直接跳转到公共溯源页面
 const quickTrace = (code) => {
-  router.push(`/dashboard/consumer/report/${code}`)
+  router.push(`/trace/${code}`)
 }
 
 // 查看完整链上记录
@@ -120,7 +156,8 @@ const performOCR = async () => {
 const useRecognizedCode = () => {
   if (recognizedCode.value) {
     showUpload.value = false
-    router.push(`/dashboard/consumer/report/${recognizedCode.value}`)
+    // 跳转到公共溯源页面
+    router.push(`/trace/${recognizedCode.value}`)
   }
 }
 </script>

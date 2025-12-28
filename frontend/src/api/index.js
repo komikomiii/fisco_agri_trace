@@ -64,3 +64,5 @@ api.interceptors.response.use(
 )
 
 export default api
+export { aiApi } from './ai'
+export { blockchainApi } from './blockchain'

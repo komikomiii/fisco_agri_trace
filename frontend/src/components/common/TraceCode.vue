@@ -1,6 +1,15 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import {
+  Connection,
+  DocumentCopy,
+  Camera,
+  View,
+  Download,
+  Printer
+} from '@element-plus/icons-vue'
+import VueQr from '@chenfengyuan/vue-qrcode'
 
 const props = defineProps({
   code: {
@@ -20,6 +29,15 @@ const props = defineProps({
 const emit = defineEmits(['viewDetail', 'generateQrcode'])
 
 const qrcodeVisible = ref(false)
+const qrcodeCanvas = ref(null)
+
+// 二维码内容：指向公共溯源页面的 URL
+const qrcodeValue = computed(() => {
+  if (!props.code) return ''
+  // 使用当前网站的 URL + 溯源页面路径
+  const baseUrl = window.location.origin
+  return `${baseUrl}/trace/${props.code}`
+})
 
 const copyCode = async () => {
   try {
@@ -33,6 +51,94 @@ const copyCode = async () => {
 const showQrcodeDialog = () => {
   qrcodeVisible.value = true
   emit('generateQrcode', props.code)
+}
+
+// 下载二维码
+const downloadQrcode = () => {
+  const canvas = qrcodeCanvas.value
+  if (!canvas) return
+
+  try {
+    // 创建图片
+    const image = canvas.toDataURL('image/png')
+
+    // 创建下载链接
+    const link = document.createElement('a')
+    link.href = image
+    link.download = `溯源码_${props.code}.png`
+    link.click()
+
+    ElMessage.success('二维码下载成功')
+  } catch (err) {
+    ElMessage.error('下载失败，请截图保存')
+  }
+}
+
+// 打印二维码
+const printQrcode = () => {
+  const canvas = qrcodeCanvas.value
+  if (!canvas) return
+
+  try {
+    const image = canvas.toDataURL('image/png')
+
+    // 创建新窗口进行打印
+    const printWindow = window.open('', '_blank')
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>产品溯源二维码 - ${props.code}</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 40px;
+          }
+          .qrcode-container {
+            display: inline-block;
+            padding: 30px;
+            border: 2px solid #2db84d;
+            border-radius: 16px;
+          }
+          .qrcode-image {
+            margin-bottom: 20px;
+          }
+          .trace-code {
+            font-size: 18px;
+            font-weight: bold;
+            color: #2db84d;
+            margin-bottom: 10px;
+          }
+          .tip {
+            color: #666;
+            font-size: 14px;
+          }
+          @media print {
+            body { padding: 0; }
+            .qrcode-container { border: 2px solid #000; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="qrcode-container">
+          <img src="${image}" class="qrcode-image" width="200" height="200" />
+          <div class="trace-code">${props.code}</div>
+          <div class="tip">扫描二维码查看产品溯源信息</div>
+        </div>
+        <` + `script>
+          window.onload = function() {
+            window.print()
+            window.close()
+          }
+        </` + `script>
+      </body>
+      </html>
+    `)
+    printWindow.document.close()
+  } catch (err) {
+    ElMessage.error('打印失败')
+  }
 }
 </script>
 
@@ -56,22 +162,28 @@ const showQrcodeDialog = () => {
     </div>
 
     <!-- 二维码弹窗 -->
-    <el-dialog v-model="qrcodeVisible" title="产品溯源二维码" width="360px" center>
+    <el-dialog v-model="qrcodeVisible" title="产品溯源二维码" width="400px" center>
       <div class="qrcode-content">
-        <div class="qrcode-placeholder">
-          <!-- 这里后续替换为真实二维码 -->
-          <div class="mock-qrcode">
-            <el-icon :size="80" color="#2db84d"><Grid /></el-icon>
+        <div class="qrcode-wrapper">
+          <div class="qrcode-border">
+            <VueQr
+              ref="qrcodeCanvas"
+              :value="qrcodeValue"
+              :size="200"
+              :margin="10"
+              :level="'H'"
+              :render-as="'canvas'"
+            />
           </div>
-          <p class="qrcode-tip">扫描二维码查看溯源信息</p>
         </div>
         <div class="qrcode-code">
           <span>{{ code }}</span>
         </div>
+        <p class="qrcode-tip">扫描二维码查看产品溯源信息</p>
       </div>
       <template #footer>
-        <el-button type="primary" :icon="Download">下载二维码</el-button>
-        <el-button :icon="Printer">打印</el-button>
+        <el-button type="primary" :icon="Download" @click="downloadQrcode">下载二维码</el-button>
+        <el-button :icon="Printer" @click="printQrcode">打印</el-button>
       </template>
     </el-dialog>
   </div>
@@ -145,33 +257,35 @@ const showQrcodeDialog = () => {
   text-align: center;
 }
 
-.qrcode-placeholder {
-  padding: 24px;
+.qrcode-wrapper {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
 }
 
-.mock-qrcode {
-  width: 180px;
-  height: 180px;
-  margin: 0 auto 16px;
-  background: #f5f5f5;
+.qrcode-border {
+  padding: 15px;
+  background: white;
   border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 2px dashed #ddd;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  display: inline-block;
+}
+
+.qrcode-code {
+  padding: 12px 24px;
+  background: linear-gradient(135deg, rgba(45, 184, 77, 0.1), rgba(45, 184, 77, 0.05));
+  border-radius: 8px;
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--primary-color);
+  display: inline-block;
+  margin-bottom: 12px;
 }
 
 .qrcode-tip {
   color: var(--text-muted);
   font-size: 13px;
-}
-
-.qrcode-code {
-  padding: 12px;
-  background: var(--bg-color);
-  border-radius: 8px;
-  font-family: monospace;
-  font-size: 14px;
-  color: var(--primary-color);
+  margin: 0;
 }
 </style>

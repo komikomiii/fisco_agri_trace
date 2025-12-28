@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from app.config import settings
 from app.database import engine, Base, SessionLocal
-from app.api import auth, producer, blockchain, processor, inspector, seller
+from app.api import auth, producer, blockchain, processor, inspector, seller, ai
 from app.models.user import User, UserRole
 from passlib.context import CryptContext
 
@@ -87,6 +87,7 @@ app.include_router(blockchain.router, prefix="/api")
 app.include_router(processor.router, prefix="/api")
 app.include_router(inspector.router, prefix="/api")
 app.include_router(seller.router, prefix="/api")
+app.include_router(ai.router, prefix="/api")
 
 
 @app.get("/")

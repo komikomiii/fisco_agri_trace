@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@chenfengyuan/vue-qrcode": "^2.0.0",
     "@element-plus/icons-vue": "^2.3.2",
     "axios": "^1.13.2",
     "element-plus": "^2.13.0",

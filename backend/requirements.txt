@@ -25,3 +25,6 @@ httpx==0.26.0
 
 # CORS
 starlette==0.35.1
+
+# AI API
+zhipuai>=2.1.5

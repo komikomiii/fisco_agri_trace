@@ -36,6 +36,9 @@ class Settings:
     FISCO_NODE_PORT: int = 20200
     FISCO_GROUP_ID: int = 1
 
+    # AI API
+    GLM_API_KEY: str = "35197c7f7faf458792e9d565e14a51a7.Zbtq3C0Jf4xBL86G"
+
 
 @lru_cache()
 def get_settings():
