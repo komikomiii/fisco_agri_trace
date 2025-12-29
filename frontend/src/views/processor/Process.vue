@@ -35,26 +35,6 @@ const currentList = computed(() => {
   return []
 })
 
-// 成品名称映射（根据原材料自动推荐）
-const productMapping = {
-  '草莓': ['草莓酱', '草莓罐头', '草莓干', '草莓汁'],
-  '番茄': ['番茄酱', '番茄罐头', '番茄汁', '番茄沙司'],
-  '苹果': ['苹果酱', '苹果罐头', '苹果干', '苹果汁'],
-  '黄瓜': ['黄瓜脆片', '酸黄瓜', '黄瓜汁', '黄瓜干'],
-  '有机西红柿': ['番茄酱', '番茄罐头', '番茄汁'],
-  '测试番茄': ['番茄酱', '番茄罐头', '番茄汁'],
-  '测试草莓': ['草莓酱', '草莓罐头', '草莓干', '草莓汁']
-}
-
-// 根据原材料获取推荐成品
-const getRecommendedProducts = (rawMaterial) => {
-  for (const [key, products] of Object.entries(productMapping)) {
-    if (rawMaterial.includes(key)) {
-      return products
-    }
-  }
-  return ['加工成品1', '加工成品2', '加工成品3']
-}
 
 // 状态映射
 const statusMap = {
@@ -85,16 +65,14 @@ const processForm = ref({
 
 const openProcessDialog = (product = null) => {
   if (product) {
-    const recommended = getRecommendedProducts(product.name)
     processForm.value = {
       productId: product.id,
       traceCode: product.trace_code,
       productName: product.name,
       processType: '',
-      outputProduct: recommended[0] || '', // 自动推荐第一个
+      outputProduct: '',
       outputQuantity: Math.floor(product.quantity || 100), // 默认产量
-      notes: '',
-      recommendedProducts: recommended
+      notes: ''
     }
   } else {
     processForm.value = {
@@ -104,8 +82,7 @@ const openProcessDialog = (product = null) => {
       processType: '',
       outputProduct: '',
       outputQuantity: 0,
-      notes: '',
-      recommendedProducts: []
+      notes: ''
     }
   }
   processDialogVisible.value = true
@@ -590,21 +567,11 @@ const getProductStatus = (chain) => {
           </el-select>
         </el-form-item>
         <el-form-item label="成品名称" required>
-          <el-select
+          <el-input
             v-model="processForm.outputProduct"
-            placeholder="选择或输入成品名称"
+            placeholder="请输入成品名称"
             style="width: 100%"
-            filterable
-            allow-create
-          >
-            <el-option
-              v-for="product in processForm.recommendedProducts"
-              :key="product"
-              :label="product"
-              :value="product"
-            />
-          </el-select>
-          <div class="form-hint">根据原材料自动推荐，也可自定义输入</div>
+          />
         </el-form-item>
         <el-form-item label="预计产量" required>
           <el-input-number v-model="processForm.outputQuantity" :min="1" style="width: 200px" />

@@ -109,27 +109,35 @@ class FiscoBcosClient:
 
             return receipt if receipt else None
 
-    def _wait_for_transaction(self, tx_hash: str, timeout: int = 30, poll_interval: float = 1.0) -> Optional[int]:
+    def _wait_for_transaction(self, tx_hash: str, timeout: int = 10, poll_interval: float = 0.2) -> Optional[int]:
         """
         等待交易被打包进区块，返回实际区块号
+        使用纯 RPC 查询，避免启动 Console 进程（快速轮询）
         """
         import time
         start_time = time.time()
 
         while time.time() - start_time < timeout:
-            receipt = self.get_transaction_receipt(tx_hash)
-            if receipt and receipt.get("status") == "0x0":
-                # 交易成功，获取区块号
-                block_number = receipt.get("blockNumber")
-                if block_number:
-                    # 如果是十六进制字符串，转换为整数
-                    if isinstance(block_number, str) and block_number.startswith("0x"):
-                        return int(block_number, 16)
-                    return int(block_number)
+            # 直接使用 RPC 获取交易回执（比 Console 快得多）
+            result = self._rpc_call("getTransactionReceipt", [self.group_id, tx_hash, False])
+            if result.get("result"):
+                receipt = result["result"]
+                status = receipt.get("status")
+                # status == 0 表示成功 (FISCO BCOS 3.0)
+                if status == 0 or status == "0x0" or status == "0":
+                    block_number = receipt.get("blockNumber")
+                    if block_number is not None:
+                        if isinstance(block_number, str) and block_number.startswith("0x"):
+                            return int(block_number, 16)
+                        return int(block_number)
             time.sleep(poll_interval)
 
-        # 超时返回当前区块号
-        return self.get_block_number()
+        # 超时返回当前区块号（使用 RPC）
+        result = self._rpc_call("getBlockNumber", [self.group_id])
+        if "result" in result:
+            bn = result["result"]
+            return int(bn, 16) if isinstance(bn, str) else bn
+        return 0
 
     def _run_console_command(self, command: str) -> Tuple[bool, str, str]:
         """
