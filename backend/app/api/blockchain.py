@@ -81,22 +81,25 @@ async def get_chain_info():
 @router.get("/products", response_model=List[ProductListItem])
 async def get_on_chain_products(limit: int = 10, offset: int = 0):
     """
-    获取已上架的产品列表
+    获取已上架的产品列表（销售阶段的产品）
 
     参数:
     - limit: 返回数量限制，默认10条
     - offset: 偏移量，默认0
 
-    返回最近创建的产品列表（按创建时间降序）
+    返回最近上架的产品列表（已到达销售阶段，按更新时间降序）
     """
+    from app.models.product import ProductStage
+
     db = next(get_db())
 
     try:
-        # 查询已上架的产品
+        # 查询已上架的产品（在销售阶段且状态正常的产品）
         products = db.query(Product).filter(
-            Product.status == ProductStatus.ON_CHAIN
+            Product.status == ProductStatus.ON_CHAIN,
+            Product.current_stage == ProductStage.SELLER
         ).order_by(
-            Product.created_at.desc()
+            Product.updated_at.desc()
         ).limit(limit).offset(offset).all()
 
         result = []

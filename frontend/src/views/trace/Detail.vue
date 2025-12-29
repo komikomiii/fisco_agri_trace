@@ -37,6 +37,16 @@ const stageNames = {
   seller: '销售商'
 }
 
+// 加工类型映射
+const processTypeMap = {
+  wash: '清洗分拣',
+  cut: '切割加工',
+  juice: '榨汁加工',
+  pack: '包装封装',
+  freeze: '冷冻处理',
+  dry: '烘干处理'
+}
+
 // 操作描述
 const getActionLabel = (action) => {
   const map = {
@@ -117,7 +127,7 @@ const timelineItems = computed(() => {
         case 'create':
           if (record.data.origin) details.push({ label: '产地', value: record.data.origin })
           if (record.data.quantity) details.push({ label: '数量', value: `${record.data.quantity} ${record.data.unit || 'kg'}` })
-          if (record.data.plantDate) details.push({ label: '种植日期', value: record.data.plantDate })
+          if (record.data.plantDate) details.push({ label: '生产日期', value: record.data.plantDate })
           break
         case 'harvest':
           if (record.data.batchNo) details.push({ label: '批次号', value: record.data.batchNo })
@@ -129,7 +139,7 @@ const timelineItems = computed(() => {
           break
         case 'process':
           if (record.data.outputProduct) details.push({ label: '成品名称', value: record.data.outputProduct })
-          if (record.data.processType) details.push({ label: '加工类型', value: record.data.processType })
+          if (record.data.processType) details.push({ label: '加工类型', value: processTypeMap[record.data.processType] || record.data.processType })
           if (record.data.outputQuantity) details.push({ label: '产出数量', value: `${record.data.outputQuantity} 件` })
           break
         case 'inspect':

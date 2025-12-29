@@ -194,6 +194,21 @@ const getActionLabel = (action) => {
   }
   return map[action] || action
 }
+
+// 加工类型映射
+const processTypeMap = {
+  wash: '清洗分拣',
+  cut: '切割加工',
+  juice: '榨汁加工',
+  pack: '包装封装',
+  freeze: '冷冻处理',
+  dry: '烘干处理'
+}
+
+// 获取加工类型的中文名称
+const getProcessTypeName = (type) => {
+  return processTypeMap[type] || type || '-'
+}
 </script>
 
 <template>
@@ -424,7 +439,7 @@ const getActionLabel = (action) => {
               {{ productStore.getMergedData(detailChain)?.origin || '-' }}
             </el-descriptions-item>
             <el-descriptions-item label="加工方式">
-              {{ getProcessInfo(detailChain).processType || '-' }}
+              {{ getProcessTypeName(getProcessInfo(detailChain).processType) }}
             </el-descriptions-item>
           </el-descriptions>
         </div>

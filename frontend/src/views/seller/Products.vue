@@ -255,6 +255,53 @@ const getStatusTag = (product) => {
 }
 
 // ==================== 数据加载 ====================
+// 加工类型映射
+const processTypeMap = {
+  wash: '清洗分拣',
+  cut: '切割加工',
+  juice: '榨汁加工',
+  pack: '包装封装',
+  freeze: '冷冻处理',
+  dry: '烘干处理'
+}
+
+// 检测类型映射
+const inspectTypeMap = {
+  quality: '质量检测',
+  safety: '安全检测',
+  appearance: '外观检测'
+}
+
+// 翻译备注中的英文
+const translateRemark = (remark) => {
+  if (!remark) return remark
+
+  let result = remark
+
+  // 替换 "加工: juice → 草莓酱" 为 "加工: 榨汁加工 → 草莓酱"
+  result = result.replace(/加工:\s*(\w+)\s*→/g, (match, type) => {
+    const chineseType = processTypeMap[type] || type
+    return `加工: ${chineseType} →`
+  })
+
+  // 替换 "送检: quality" 为 "送检: 质量检测"
+  result = result.replace(/送检:\s*(\w+)/g, (match, type) => {
+    const chineseType = inspectTypeMap[type] || type
+    return `送检: ${chineseType}`
+  })
+
+  // 替换 "开始检测: quality" 为 "开始检测: 质量检测"
+  result = result.replace(/开始检测:\s*(\w+)/g, (match, type) => {
+    const chineseType = inspectTypeMap[type] || type
+    return `开始检测: ${chineseType}`
+  })
+
+  // 移除接收原料备注中的 "质量等级A/B/C" 信息（因为那时还未质检）
+  result = result.replace(/接收原料，质量等级：[ABC]/g, '接收原料')
+
+  return result
+}
+
 const fetchInventoryProducts = async () => {
   loading.value = true
   try {
@@ -650,7 +697,7 @@ onMounted(() => {
                   <span class="operator">{{ record.operator_name }}</span>
                 </div>
                 <div v-if="record.remark" class="record-remark">
-                  {{ record.remark }}
+                  {{ translateRemark(record.remark) }}
                 </div>
                 <div v-if="record.tx_hash" class="chain-info-box" @click="openChainVerify(record)">
                   <div class="chain-badge">

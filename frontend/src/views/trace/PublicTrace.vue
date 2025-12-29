@@ -119,6 +119,53 @@ const productInfo = computed(() => {
   }
 })
 
+// 加工类型映射
+const processTypeMap = {
+  wash: '清洗分拣',
+  cut: '切割加工',
+  juice: '榨汁加工',
+  pack: '包装封装',
+  freeze: '冷冻处理',
+  dry: '烘干处理'
+}
+
+// 检测类型映射
+const inspectTypeMap = {
+  quality: '质量检测',
+  safety: '安全检测',
+  appearance: '外观检测'
+}
+
+// 翻译备注中的英文
+const translateRemark = (remark) => {
+  if (!remark) return remark
+
+  let result = remark
+
+  // 替换 "加工: juice → 草莓酱" 为 "加工: 榨汁加工 → 草莓酱"
+  result = result.replace(/加工:\s*(\w+)\s*→/g, (match, type) => {
+    const chineseType = processTypeMap[type] || type
+    return `加工: ${chineseType} →`
+  })
+
+  // 替换 "送检: quality" 为 "送检: 质量检测"
+  result = result.replace(/送检:\s*(\w+)/g, (match, type) => {
+    const chineseType = inspectTypeMap[type] || type
+    return `送检: ${chineseType}`
+  })
+
+  // 替换 "开始检测: quality" 为 "开始检测: 质量检测"
+  result = result.replace(/开始检测:\s*(\w+)/g, (match, type) => {
+    const chineseType = inspectTypeMap[type] || type
+    return `开始检测: ${chineseType}`
+  })
+
+  // 移除接收原料备注中的 "质量等级A/B/C" 信息（因为那时还未质检）
+  result = result.replace(/接收原料，质量等级：[ABC]/g, '接收原料')
+
+  return result
+}
+
 // 阶段信息映射
 const stageConfig = {
   'producer': { name: '原料种植', icon: '🌱', color: '#52c41a' },
@@ -243,6 +290,15 @@ const timelineData = computed(() => {
               }
             } else if (key === 'quantity' || key === 'result_quantity' || key === 'received_quantity') {
               formattedValue = value + ' kg'
+            } else if (key === 'process_type') {
+              // 加工类型翻译
+              formattedValue = processTypeMap[value] || value
+            } else if (key === 'inspection_type') {
+              // 检测类型翻译
+              formattedValue = inspectTypeMap[value] || value
+            } else if (key === 'qualified') {
+              // 检测结果翻译
+              formattedValue = value === true || value === 'true' ? '合格' : '不合格'
             }
 
             if (value !== null && value !== '' && value !== undefined) {
@@ -275,7 +331,7 @@ const timelineData = computed(() => {
       operator: record.operatorName || record.operator || '-',
       timestamp: record.timestamp ? formatTime(record.timestamp) : '-',
       rawTimestamp: record.timestamp,
-      remark: record.remark || '',
+      remark: translateRemark(record.remark) || '',
       dataDetails: dataDetails,
       isAmend: actionKey === 'amend' || actionKey === 5,
       txHash: txHash

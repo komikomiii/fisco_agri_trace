@@ -255,7 +255,7 @@ const useRecognizedCode = () => {
         <div class="card-header">
           <span class="title">
             <el-icon><Clock /></el-icon>
-            最近上链产品
+            最近上架产品
           </span>
           <span class="subtitle">点击可快速查询</span>
         </div>

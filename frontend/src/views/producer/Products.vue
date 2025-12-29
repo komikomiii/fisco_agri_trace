@@ -441,7 +441,7 @@ const handleConfirmOnChain = (product) => {
       name: '产品名称',
       category: '产品类别',
       origin: '产地',
-      plantDate: '种植日期',
+      plantDate: '生产日期',
       quantity: '预计产量',
       unit: '单位'
     },
@@ -1122,7 +1122,7 @@ const resetSearch = () => {
         <el-form-item label="产地">
           <el-input v-model="productForm.origin" placeholder="请输入产地" />
         </el-form-item>
-        <el-form-item label="种植日期">
+        <el-form-item label="生产日期">
           <el-date-picker
             v-model="productForm.plantDate"
             type="date"

@@ -46,6 +46,16 @@ const inspectTypeMap = {
   appearance: '外观检测'
 }
 
+// 加工类型映射
+const processTypeMap = {
+  wash: '清洗分拣',
+  cut: '切割加工',
+  juice: '榨汁加工',
+  pack: '包装封装',
+  freeze: '冷冻处理',
+  dry: '烘干处理'
+}
+
 // ==================== 开始检测 ====================
 const startInspectVisible = ref(false)
 const startInspectForm = ref({
@@ -404,7 +414,7 @@ const translateRemark = (remark) => {
                 <span class="name">{{ row.name }}</span>
                 <span class="code">{{ row.trace_code }}</span>
                 <span v-if="row.process_type" class="process-info">
-                  加工: {{ row.process_type }}
+                  加工: {{ processTypeMap[row.process_type] || row.process_type }}
                 </span>
               </div>
             </div>
