@@ -109,7 +109,7 @@ class FiscoBcosClient:
 
             return receipt if receipt else None
 
-    def _wait_for_transaction(self, tx_hash: str, timeout: int = 10, poll_interval: float = 0.2) -> Optional[int]:
+    def _wait_for_transaction(self, tx_hash: str, timeout: int = 15, poll_interval: float = 0.5) -> Optional[int]:
         """
         等待交易被打包进区块，返回实际区块号
         使用纯 RPC 查询，避免启动 Console 进程（快速轮询）

@@ -8,12 +8,17 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
+
+# 区块链操作线程池（避免阻塞事件循环）
+blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/processor", tags=["加工商"])
 
@@ -202,14 +207,18 @@ async def receive_product(
         "received_at": datetime.now().isoformat()
     }
 
-    # 4. 调用智能合约转移产品到加工商
-    success, tx_hash, block_number = blockchain_client.transfer_product(
-        trace_code=product.trace_code,
-        new_holder=current_user.blockchain_address,
-        new_stage="processor",  # PROCESSOR
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"接收质检等级: {receive_data.quality}",
-        operator_name=current_user.real_name or current_user.username
+    # 4. 调用智能合约转移产品到加工商（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.transfer_product(
+            trace_code=product.trace_code,
+            new_holder=current_user.blockchain_address,
+            new_stage="processor",  # PROCESSOR
+            data=json.dumps(chain_data, default=str, ensure_ascii=False),
+            remark=f"接收质检等级: {receive_data.quality}",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not success:
@@ -285,14 +294,18 @@ async def process_product(
         "notes": process_data.notes
     }
 
-    # 3. 调用智能合约添加加工记录
-    success, tx_hash, block_number = blockchain_client.add_record(
-        trace_code=product.trace_code,
-        stage=1,  # ProductStage.PROCESSOR
-        action=1,  # RecordAction.PROCESS
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"加工: {process_data.process_type} → {process_data.result_product}",
-        operator_name=current_user.real_name or current_user.username
+    # 3. 调用智能合约添加加工记录（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=1,  # ProductStage.PROCESSOR
+            action=1,  # RecordAction.PROCESS
+            data=json.dumps(chain_data, default=str, ensure_ascii=False),
+            remark=f"加工: {process_data.process_type} → {process_data.result_product}",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not success:
@@ -343,14 +356,17 @@ async def process_product(
                 "notes": "重新加工完成，自动送检"
             }
 
-            # 调用智能合约添加送检记录
-            send_success, send_tx_hash, send_block_number = blockchain_client.add_record(
-                trace_code=product.trace_code,
-                stage=1,  # ProductStage.PROCESSOR
-                action=2,  # RecordAction.SEND_INSPECT
-                data=json.dumps(send_chain_data, default=str, ensure_ascii=False),
-                remark="送检: 质量检测",
-                operator_name=current_user.real_name or current_user.username
+            # 调用智能合约添加送检记录（使用线程池避免阻塞）
+            send_success, send_tx_hash, send_block_number = await loop.run_in_executor(
+                blockchain_executor,
+                lambda: blockchain_client.add_record(
+                    trace_code=product.trace_code,
+                    stage=1,  # ProductStage.PROCESSOR
+                    action=2,  # RecordAction.SEND_INSPECT
+                    data=json.dumps(send_chain_data, default=str, ensure_ascii=False),
+                    remark="送检: 质量检测",
+                    operator_name=current_user.real_name or current_user.username
+                )
             )
 
             if send_success:
@@ -364,13 +380,16 @@ async def process_product(
                         "to_inspector": inspector.username
                     }
 
-                    transfer_success, transfer_tx_hash, transfer_block = blockchain_client.transfer_product(
-                        trace_code=product.trace_code,
-                        new_holder=inspector.blockchain_address or inspector.username,
-                        new_stage="inspector",
-                        data=json.dumps(transfer_data, ensure_ascii=False),
-                        remark="加工商送检",
-                        operator_name=current_user.real_name or current_user.username
+                    transfer_success, transfer_tx_hash, transfer_block = await loop.run_in_executor(
+                        blockchain_executor,
+                        lambda: blockchain_client.transfer_product(
+                            trace_code=product.trace_code,
+                            new_holder=inspector.blockchain_address or inspector.username,
+                            new_stage="inspector",
+                            data=json.dumps(transfer_data, ensure_ascii=False),
+                            remark="加工商送检",
+                            operator_name=current_user.real_name or current_user.username
+                        )
                     )
 
                     if transfer_success:
@@ -489,14 +508,18 @@ async def send_inspect_product(
         "notes": inspect_data.notes or "加工完成，请求质检"
     }
 
-    # 5. 调用智能合约添加送检记录
-    success, tx_hash, block_number = blockchain_client.add_record(
-        trace_code=product.trace_code,
-        stage=1,  # ProductStage.PROCESSOR
-        action=2,  # RecordAction.SEND_INSPECT
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"送检: {inspect_data.inspection_type}",
-        operator_name=current_user.real_name or current_user.username
+    # 5. 调用智能合约添加送检记录（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=1,  # ProductStage.PROCESSOR
+            action=2,  # RecordAction.SEND_INSPECT
+            data=json.dumps(chain_data, default=str, ensure_ascii=False),
+            remark=f"送检: {inspect_data.inspection_type}",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not success:
@@ -514,13 +537,16 @@ async def send_inspect_product(
         "to_inspector": inspector.username
     }
 
-    transfer_success, transfer_tx_hash, transfer_block = blockchain_client.transfer_product(
-        trace_code=product.trace_code,
-        new_holder=inspector.blockchain_address or inspector.username,
-        new_stage="inspector",
-        data=json.dumps(transfer_data, ensure_ascii=False),
-        remark=f"加工商送检",
-        operator_name=current_user.real_name or current_user.username
+    transfer_success, transfer_tx_hash, transfer_block = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.transfer_product(
+            trace_code=product.trace_code,
+            new_holder=inspector.blockchain_address or inspector.username,
+            new_stage="inspector",
+            data=json.dumps(transfer_data, ensure_ascii=False),
+            remark=f"加工商送检",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not transfer_success:

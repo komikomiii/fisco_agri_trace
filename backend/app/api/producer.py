@@ -8,12 +8,17 @@ from typing import Optional, List
 from datetime import datetime
 import json
 import uuid
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
+
+# 区块链操作线程池（避免阻塞事件循环）
+blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/producer", tags=["原料商"])
 
@@ -322,17 +327,21 @@ async def submit_to_chain(
         "harvest_date": str(product.harvest_date) if product.harvest_date else None
     }, ensure_ascii=False)
 
-    # 调用区块链上链
+    # 调用区块链上链（使用线程池避免阻塞）
     quantity_int = int((product.quantity or 0) * 1000)  # 转换为整数，支持3位小数
-    success, tx_hash, block_number = blockchain_client.create_product(
-        trace_code=product.trace_code,
-        name=product.name or "",
-        category=product.category or "",
-        origin=product.origin or "",
-        quantity=quantity_int,
-        unit=product.unit or "",
-        data=chain_data,
-        operator_name=operator_name
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.create_product(
+            trace_code=product.trace_code,
+            name=product.name or "",
+            category=product.category or "",
+            origin=product.origin or "",
+            quantity=quantity_int,
+            unit=product.unit or "",
+            data=chain_data,
+            operator_name=operator_name
+        )
     )
 
     if not success:
@@ -562,16 +571,20 @@ async def amend_product(
         "new_value": amend_data.new_value
     }, ensure_ascii=False)
 
-    # 调用区块链添加修正记录
+    # 调用区块链添加修正记录（使用线程池避免阻塞）
     # Stage.PRODUCER = 0
-    success, tx_hash, block_number = blockchain_client.add_amend_record(
-        trace_code=product.trace_code,
-        stage=0,  # PRODUCER
-        data=amend_chain_data,
-        remark=amend_data.reason,
-        operator_name=operator_name,
-        previous_record_id=last_record.id if last_record else 0,
-        amend_reason=amend_data.reason
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_amend_record(
+            trace_code=product.trace_code,
+            stage=0,  # PRODUCER
+            data=amend_chain_data,
+            remark=amend_data.reason,
+            operator_name=operator_name,
+            previous_record_id=last_record.id if last_record else 0,
+            amend_reason=amend_data.reason
+        )
     )
 
     if not success:
@@ -701,14 +714,18 @@ async def resubmit_rejected_product(
         "remark": data.remark or "修改后重新提交"
     }
 
-    # 调用区块链添加记录
-    success, tx_hash, block_number = blockchain_client.add_record(
-        trace_code=product.trace_code,
-        stage=0,  # PRODUCER
-        action=5,  # CREATE (重新创建)
-        data=json.dumps(resubmit_data, ensure_ascii=False),
-        remark=f"重新提交: {data.remark or '修改后重新提交'}",
-        operator_name=operator_name
+    # 调用区块链添加记录（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=0,  # PRODUCER
+            action=5,  # CREATE (重新创建)
+            data=json.dumps(resubmit_data, ensure_ascii=False),
+            remark=f"重新提交: {data.remark or '修改后重新提交'}",
+            operator_name=operator_name
+        )
     )
 
     if not success:

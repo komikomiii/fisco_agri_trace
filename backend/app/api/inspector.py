@@ -7,12 +7,17 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
+
+# 区块链操作线程池（避免阻塞事件循环）
+blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/inspector", tags=["质检员"])
 
@@ -356,14 +361,18 @@ async def inspect_product(
         "timestamp": datetime.now().isoformat()
     }
 
-    # 5. 调用智能合约
-    success, tx_hash, block_number = blockchain_client.add_record(
-        trace_code=product.trace_code,
-        stage=2,  # ProductStage.INSPECTOR
-        action=4,  # RecordAction.INSPECT
-        data=json.dumps(chain_data, ensure_ascii=False),
-        remark=f"质检: {'合格' if inspect_data.qualified else '不合格'} - {inspect_data.quality_grade}级",
-        operator_name=current_user.real_name or current_user.username
+    # 5. 调用智能合约（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=2,  # ProductStage.INSPECTOR
+            action=4,  # RecordAction.INSPECT
+            data=json.dumps(chain_data, ensure_ascii=False),
+            remark=f"质检: {'合格' if inspect_data.qualified else '不合格'} - {inspect_data.quality_grade}级",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not success:
@@ -386,13 +395,16 @@ async def inspect_product(
             "inspect_result": inspect_data.inspect_result
         }
 
-        transfer_success, transfer_tx_hash, transfer_block = blockchain_client.transfer_product(
-            trace_code=product.trace_code,
-            new_holder=seller.blockchain_address or seller.username,
-            new_stage="seller",
-            data=json.dumps(transfer_data, ensure_ascii=False),
-            remark="质检员转移产品",
-            operator_name=current_user.real_name or current_user.username
+        transfer_success, transfer_tx_hash, transfer_block = await loop.run_in_executor(
+            blockchain_executor,
+            lambda: blockchain_client.transfer_product(
+                trace_code=product.trace_code,
+                new_holder=seller.blockchain_address or seller.username,
+                new_stage="seller",
+                data=json.dumps(transfer_data, ensure_ascii=False),
+                remark="质检员转移产品",
+                operator_name=current_user.real_name or current_user.username
+            )
         )
 
         if not transfer_success:
@@ -413,19 +425,22 @@ async def inspect_product(
         chain_data["unqualified_action"] = "invalidate"
         chain_data["invalidate_reason"] = inspect_data.reject_reason
 
-        # 记录作废操作到链上
-        invalidate_success, invalidate_tx_hash, invalidate_block = blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=2,  # INSPECTOR
-            action=6,  # TERMINATE (用于作废)
-            data=json.dumps({
-                "action": "invalidate",
-                "reason": inspect_data.reject_reason,
-                "inspector": current_user.real_name or current_user.username,
-                "timestamp": datetime.now().isoformat()
-            }, ensure_ascii=False),
-            remark=f"产品作废: {inspect_data.reject_reason}",
-            operator_name=current_user.real_name or current_user.username
+        # 记录作废操作到链上（使用线程池避免阻塞）
+        invalidate_success, invalidate_tx_hash, invalidate_block = await loop.run_in_executor(
+            blockchain_executor,
+            lambda: blockchain_client.add_record(
+                trace_code=product.trace_code,
+                stage=2,  # INSPECTOR
+                action=6,  # TERMINATE (用于作废)
+                data=json.dumps({
+                    "action": "invalidate",
+                    "reason": inspect_data.reject_reason,
+                    "inspector": current_user.real_name or current_user.username,
+                    "timestamp": datetime.now().isoformat()
+                }, ensure_ascii=False),
+                remark=f"产品作废: {inspect_data.reject_reason}",
+                operator_name=current_user.real_name or current_user.username
+            )
         )
 
         if not invalidate_success:
@@ -483,13 +498,16 @@ async def inspect_product(
             "timestamp": datetime.now().isoformat()
         }
 
-        reject_success, reject_tx_hash, reject_block = blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=2,  # INSPECTOR
-            action=5,  # REJECT
-            data=json.dumps(reject_data, ensure_ascii=False),
-            remark=f"退回{stage_label}: {inspect_data.reject_reason}",
-            operator_name=current_user.real_name or current_user.username
+        reject_success, reject_tx_hash, reject_block = await loop.run_in_executor(
+            blockchain_executor,
+            lambda: blockchain_client.add_record(
+                trace_code=product.trace_code,
+                stage=2,  # INSPECTOR
+                action=5,  # REJECT
+                data=json.dumps(reject_data, ensure_ascii=False),
+                remark=f"退回{stage_label}: {inspect_data.reject_reason}",
+                operator_name=current_user.real_name or current_user.username
+            )
         )
 
         if not reject_success:

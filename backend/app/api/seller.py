@@ -7,12 +7,17 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
+
+# 区块链操作线程池（避免阻塞事件循环）
+blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/seller", tags=["销售商"])
 
@@ -217,14 +222,18 @@ async def stock_in_product(
         "timestamp": datetime.now().isoformat()
     }
 
-    # 5. 调用智能合约
-    success, tx_hash, block_number = blockchain_client.add_record(
-        trace_code=product.trace_code,
-        stage=3,  # ProductStage.SELLER
-        action=7,  # RecordAction.STOCK_IN
-        data=json.dumps(chain_data, ensure_ascii=False),
-        remark=f"入库: {stock_data.warehouse}",
-        operator_name=current_user.real_name or current_user.username
+    # 5. 调用智能合约（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=3,  # ProductStage.SELLER
+            action=7,  # RecordAction.STOCK_IN
+            data=json.dumps(chain_data, ensure_ascii=False),
+            remark=f"入库: {stock_data.warehouse}",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not success:
@@ -304,14 +313,18 @@ async def sell_product(
         "timestamp": datetime.now().isoformat()
     }
 
-    # 5. 调用智能合约记录上架
-    success, tx_hash, block_number = blockchain_client.add_record(
-        trace_code=product.trace_code,
-        stage=3,  # ProductStage.SELLER
-        action=8,  # RecordAction.SELL（复用 sell action 表示上架）
-        data=json.dumps(chain_data, ensure_ascii=False),
-        remark=f"上架: {sell_data.buyer_name}, 价格: {sell_data.buyer_phone}",
-        operator_name=current_user.real_name or current_user.username
+    # 5. 调用智能合约记录上架（使用线程池避免阻塞）
+    loop = asyncio.get_event_loop()
+    success, tx_hash, block_number = await loop.run_in_executor(
+        blockchain_executor,
+        lambda: blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=3,  # ProductStage.SELLER
+            action=8,  # RecordAction.SELL（复用 sell action 表示上架）
+            data=json.dumps(chain_data, ensure_ascii=False),
+            remark=f"上架: {sell_data.buyer_name}, 价格: {sell_data.buyer_phone}",
+            operator_name=current_user.real_name or current_user.username
+        )
     )
 
     if not success:
