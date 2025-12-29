@@ -28,5 +28,10 @@
     "username": "消费者1",
     "address": "0x62743A2f6a6c630ef3af9f7cbbdAf5fACef6d0b9",
     "keystore": "/home/pdm/DEV/komi-project/keystore/user_5.json"
+  },
+  "6": {
+    "username": "加工2",
+    "address": "0xaEC3956d388C06e550c3AC9579692260F980D0F5",
+    "keystore": "/home/pdm/DEV/komi-project/keystore/user_6.json"
   }
 }

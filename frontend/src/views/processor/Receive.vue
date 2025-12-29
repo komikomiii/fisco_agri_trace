@@ -18,14 +18,18 @@ const availableProducts = ref([])
 const receivedProductsData = ref([])
 const loading = ref(false)
 
-// 公共池中的产品（所有可接收的产品）
+// 公共池中的产品（distribution_type 为 pool 或 null）
 const poolProducts = computed(() => {
-  return availableProducts.value
+  return availableProducts.value.filter(p =>
+    p.distribution_type === 'pool' || !p.distribution_type
+  )
 })
 
-// 指定给当前加工商的产品 (暂未实现，返回空)
+// 指定给当前加工商的产品（distribution_type 为 assigned 且 is_assigned_to_me 为 true）
 const assignedProducts = computed(() => {
-  return []
+  return availableProducts.value.filter(p =>
+    p.distribution_type === 'assigned' && p.is_assigned_to_me
+  )
 })
 
 // 已接收的产品（在加工商阶段）

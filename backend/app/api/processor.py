@@ -3,6 +3,7 @@ Processor (加工商) API
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
@@ -77,13 +78,20 @@ async def list_available_products(
     获取可接收的原料列表
     - 状态为已上链 (ON_CHAIN)
     - 当前阶段为原料商 (PRODUCER)
+    - 公共池产品 或 指定给当前加工商的产品
     """
     check_processor_role(current_user)
 
     # 查询所有已上链且在原料商阶段的产品
+    # 只显示: 公共池产品 或 指定给当前加工商的产品
     products = db.query(Product).filter(
         Product.status == ProductStatus.ON_CHAIN,
-        Product.current_stage == ProductStage.PRODUCER
+        Product.current_stage == ProductStage.PRODUCER,
+        or_(
+            Product.distribution_type == "pool",
+            Product.distribution_type.is_(None),
+            Product.assigned_processor_id == current_user.id
+        )
     ).order_by(Product.created_at.desc()).all()
 
     # 手动序列化
@@ -91,6 +99,10 @@ async def list_available_products(
     for p in products:
         # 获取创建者信息
         creator = db.query(User).filter(User.id == p.creator_id).first()
+
+        # 判断是公共池还是指定发送
+        is_assigned = (p.distribution_type == "assigned" and p.assigned_processor_id == current_user.id)
+
         result.append({
             "id": p.id,
             "trace_code": p.trace_code,
@@ -101,6 +113,8 @@ async def list_available_products(
             "unit": p.unit,
             "status": p.status.value,
             "current_stage": p.current_stage.value,
+            "distribution_type": p.distribution_type or "pool",
+            "is_assigned_to_me": is_assigned,  # 是否指定给当前用户
             "created_at": p.created_at.isoformat() if p.created_at else None,
             "creator_name": creator.real_name if creator else "-"
         })

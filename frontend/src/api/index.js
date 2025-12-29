@@ -6,7 +6,7 @@ import { ElMessage } from 'element-plus'
 
 const api = axios.create({
   baseURL: 'http://localhost:8000/api',
-  timeout: 30000,  // 增加到 30 秒，避免钱包创建等耗时操作超时
+  timeout: 60000,  // 增加到 60 秒，区块链操作可能需要较长时间
   headers: {
     'Content-Type': 'application/json'
   }

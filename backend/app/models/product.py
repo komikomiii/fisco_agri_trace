@@ -57,6 +57,10 @@ class Product(Base):
     unit = Column(String(20))  # 单位
     harvest_date = Column(DateTime)  # 采收日期
 
+    # 分配方式
+    distribution_type = Column(String(20), default="pool")  # pool=公共池, assigned=指定发送
+    assigned_processor_id = Column(Integer, ForeignKey("users.id"))  # 指定的加工商ID
+
     # 区块链信息
     tx_hash = Column(String(100))  # 创建交易哈希
     block_number = Column(Integer)  # 区块高度

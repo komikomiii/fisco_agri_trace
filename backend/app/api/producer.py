@@ -28,6 +28,8 @@ class ProductCreate(BaseModel):
     unit: Optional[str] = None
     harvest_date: Optional[datetime] = None
     remark: Optional[str] = None
+    distribution_type: Optional[str] = "pool"  # pool=公共池, assigned=指定发送
+    assigned_processor_id: Optional[int] = None  # 指定的加工商ID
 
 
 class ProductUpdate(BaseModel):
@@ -38,6 +40,8 @@ class ProductUpdate(BaseModel):
     quantity: Optional[float] = None
     unit: Optional[str] = None
     harvest_date: Optional[datetime] = None
+    distribution_type: Optional[str] = None
+    assigned_processor_id: Optional[int] = None
 
 
 class AmendRequest(BaseModel):
@@ -65,6 +69,9 @@ class ProductResponse(BaseModel):
     harvest_date: Optional[datetime]
     status: ProductStatus
     current_stage: ProductStage
+    distribution_type: Optional[str] = "pool"
+    assigned_processor_id: Optional[int] = None
+    assigned_processor_name: Optional[str] = None  # 加工商名称
     tx_hash: Optional[str]
     block_number: Optional[int]
     created_at: datetime
@@ -106,6 +113,25 @@ def generate_trace_code() -> str:
     return f"TRACE-{date_str}-{unique_id}"
 
 
+@router.get("/processors")
+async def get_processors(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """获取加工商列表（用于指定发送）"""
+    check_producer_role(current_user)
+
+    processors = db.query(User).filter(User.role == UserRole.PROCESSOR).all()
+    return [
+        {
+            "id": p.id,
+            "name": p.real_name or p.username,
+            "company": p.company
+        }
+        for p in processors
+    ]
+
+
 @router.get("/products", response_model=List[ProductResponse])
 async def list_products(
     status: Optional[ProductStatus] = None,
@@ -130,7 +156,40 @@ async def list_products(
         query = query.filter(Product.status == status)
 
     products = query.order_by(Product.created_at.desc()).all()
-    return products
+
+    # 获取所有指定的加工商ID
+    processor_ids = [p.assigned_processor_id for p in products if p.assigned_processor_id]
+    processors_map = {}
+    if processor_ids:
+        processors = db.query(User).filter(User.id.in_(processor_ids)).all()
+        processors_map = {p.id: p.real_name or p.username for p in processors}
+
+    # 为每个产品添加加工商名称
+    result = []
+    for p in products:
+        product_dict = {
+            "id": p.id,
+            "trace_code": p.trace_code,
+            "name": p.name,
+            "category": p.category,
+            "origin": p.origin,
+            "batch_no": p.batch_no,
+            "quantity": p.quantity,
+            "unit": p.unit,
+            "harvest_date": p.harvest_date,
+            "status": p.status,
+            "current_stage": p.current_stage,
+            "distribution_type": p.distribution_type or "pool",
+            "assigned_processor_id": p.assigned_processor_id,
+            "assigned_processor_name": processors_map.get(p.assigned_processor_id) if p.assigned_processor_id else None,
+            "tx_hash": p.tx_hash,
+            "block_number": p.block_number,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at
+        }
+        result.append(product_dict)
+
+    return result
 
 
 @router.post("/products", response_model=ProductResponse)
@@ -150,6 +209,8 @@ async def create_product(
         quantity=product_data.quantity,
         unit=product_data.unit,
         harvest_date=product_data.harvest_date,
+        distribution_type=product_data.distribution_type or "pool",
+        assigned_processor_id=product_data.assigned_processor_id if product_data.distribution_type == "assigned" else None,
         status=ProductStatus.DRAFT,
         current_stage=ProductStage.PRODUCER,
         creator_id=current_user.id,

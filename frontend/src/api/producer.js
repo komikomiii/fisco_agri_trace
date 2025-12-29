@@ -58,5 +58,10 @@ export const producerApi = {
   // 获取统计数据
   getStatistics() {
     return api.get('/producer/statistics')
+  },
+
+  // 获取加工商列表（用于指定发送）
+  getProcessors() {
+    return api.get('/producer/processors')
   }
 }

@@ -142,6 +142,7 @@ const filteredProducts = computed(() => {
 // 组件挂载时加载数据
 onMounted(() => {
   fetchProducts()
+  fetchProcessors()
 })
 
 // ==================== 新增/编辑产品 ====================
@@ -161,12 +162,26 @@ const productForm = reactive({
   assignedTo: null
 })
 
-// 模拟的加工商列表
-const processors = [
-  { id: 2, name: '绿源加工厂' },
-  { id: 5, name: '鑫达食品公司' },
-  { id: 6, name: '优品加工中心' }
-]
+// 加工商列表（从后端获取）
+const processors = ref([])
+const loadingProcessors = ref(false)
+
+// 获取加工商列表
+const fetchProcessors = async () => {
+  if (!USE_REAL_API) return
+
+  loadingProcessors.value = true
+  try {
+    const data = await producerApi.getProcessors()
+    processors.value = data
+  } catch (error) {
+    console.error('获取加工商列表失败', error)
+    // 使用备用数据
+    processors.value = []
+  } finally {
+    loadingProcessors.value = false
+  }
+}
 
 const openDialog = (product = null) => {
   if (product) {
@@ -415,8 +430,9 @@ const handleConfirmOnChain = (product) => {
       unit: undefined
     },
     distribution: isApiFormat ? {
-      type: product.distribution_type,
-      assignedTo: product.assigned_processor_id ? { id: product.assigned_processor_id } : null
+      type: product.distribution_type || 'pool',
+      assignedTo: product.assigned_processor_id ? { id: product.assigned_processor_id } : null,
+      assignedToName: product.assigned_processor_name
     } : product.distribution
   }
   chainConfirmVisible.value = true
@@ -890,10 +906,12 @@ const resetSearch = () => {
             <span class="quantity-text">{{ row.quantity || 0 }} <small>{{ row.unit || 'kg' }}</small></span>
           </template>
         </el-table-column>
-        <el-table-column label="分配方式" width="100" align="center">
+        <el-table-column label="分配方式" width="140" align="center">
           <template #default="{ row }">
             <el-tooltip
-              :content="(row.distribution_type || row.distribution?.type) === 'assigned' ? '指定发送给加工商' : '等待加工商领取'"
+              :content="(row.distribution_type || row.distribution?.type) === 'assigned'
+                ? `指定发送给: ${row.assigned_processor_name || row.distribution?.assignedTo?.name || '未知'}`
+                : '等待加工商领取'"
               placement="top"
             >
               <span class="tag-content">
@@ -901,7 +919,10 @@ const resetSearch = () => {
                   <Position v-if="(row.distribution_type || row.distribution?.type) === 'assigned'" />
                   <Collection v-else />
                 </el-icon>
-                <span class="tag-text">{{ (row.distribution_type || row.distribution?.type) === 'assigned' ? '指定' : '公共池' }}</span>
+                <span class="tag-text" v-if="(row.distribution_type || row.distribution?.type) === 'assigned'">
+                  {{ row.assigned_processor_name || row.distribution?.assignedTo?.name || '指定' }}
+                </span>
+                <span class="tag-text" v-else>公共池</span>
               </span>
             </el-tooltip>
           </template>
@@ -1013,14 +1034,23 @@ const resetSearch = () => {
         </el-form-item>
 
         <el-form-item v-if="productForm.distributionType === 'assigned'" label="指定加工商">
-          <el-select v-model="productForm.assignedTo" placeholder="请选择加工商" style="width: 100%">
+          <el-select
+            v-model="productForm.assignedTo"
+            placeholder="请选择加工商"
+            style="width: 100%"
+            :loading="loadingProcessors"
+            value-key="id"
+          >
             <el-option
               v-for="p in processors"
               :key="p.id"
-              :label="p.name"
+              :label="p.company ? `${p.name} (${p.company})` : p.name"
               :value="p"
             />
           </el-select>
+          <div v-if="processors.length === 0 && !loadingProcessors" class="no-processor-tip">
+            暂无可用的加工商
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -1047,7 +1077,7 @@ const resetSearch = () => {
             公共池（加工商自选）
           </el-tag>
           <el-tag v-else type="warning">
-            指定发送给：{{ pendingChainData.distribution.assignedTo?.name }}
+            指定发送给：{{ pendingChainData.distribution.assignedToName || pendingChainData.distribution.assignedTo?.name || '加工商' }}
           </el-tag>
         </div>
       </template>
@@ -1589,6 +1619,12 @@ const resetSearch = () => {
   color: #67c23a;
   border-radius: 4px;
   font-weight: 500;
+}
+
+.no-processor-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 </style>
