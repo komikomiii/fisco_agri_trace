@@ -16,6 +16,8 @@ const notificationStore = useNotificationStore()
 const pendingProducts = ref([])
 const processingProducts = ref([])
 const sentProducts = ref([])
+const rejectedProducts = ref([])
+const invalidatedProducts = ref([])
 const loading = ref(false)
 
 // 链上数据验证
@@ -32,6 +34,8 @@ const currentList = computed(() => {
   if (activeTab.value === 'pending') return pendingProducts.value
   if (activeTab.value === 'processing') return processingProducts.value
   if (activeTab.value === 'sent') return sentProducts.value
+  if (activeTab.value === 'rejected') return rejectedProducts.value
+  if (activeTab.value === 'invalidated') return invalidatedProducts.value
   return []
 })
 
@@ -40,7 +44,9 @@ const currentList = computed(() => {
 const statusMap = {
   pending: { label: '待加工', type: 'warning' },
   processing: { label: '加工中', type: 'primary' },
-  sent: { label: '已送检', type: 'success' }
+  sent: { label: '已送检', type: 'success' },
+  rejected: { label: '被退回', type: 'danger' },
+  invalidated: { label: '已作废', type: 'info' }
 }
 
 // 加工类型选项
@@ -143,11 +149,18 @@ const onProcessConfirm = async () => {
 
     chainConfirmRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
 
-    ElMessage.success('加工记录已上链')
+    // 根据是否自动送检显示不同消息
+    if (result.auto_send_inspect?.success) {
+      ElMessage.success('加工完成，已自动送检至质检员')
+    } else {
+      ElMessage.success('加工记录已上链')
+    }
 
-    // 刷新列表
+    // 刷新所有相关列表
     await fetchPendingProducts()
     await fetchProcessingProducts()
+    await fetchRejectedProducts()
+    await fetchSentProducts()
   } catch (error) {
     chainConfirmRef.value?.setError(error.response?.data?.detail || '加工失败')
   }
@@ -265,11 +278,39 @@ const fetchSentProducts = async () => {
   }
 }
 
+// 获取被退回产品列表
+const fetchRejectedProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getRejectedProducts()
+    rejectedProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取被退回产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+// 获取已作废产品列表
+const fetchInvalidatedProducts = async () => {
+  try {
+    loading.value = true
+    const data = await processorApi.getInvalidatedProducts()
+    invalidatedProducts.value = data
+  } catch (error) {
+    ElMessage.error('获取已作废产品列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
 // 页面加载时获取数据
 onMounted(() => {
   fetchPendingProducts()
   fetchProcessingProducts()
   fetchSentProducts()
+  fetchRejectedProducts()
+  fetchInvalidatedProducts()
 })
 
 // ==================== 查看详情 ====================
@@ -470,6 +511,32 @@ const getProductStatus = (chain) => {
             </span>
           </template>
         </el-tab-pane>
+        <el-tab-pane name="rejected">
+          <template #label>
+            <span>
+              被退回
+              <el-badge
+                :value="rejectedProducts.length"
+                :max="99"
+                class="tab-badge"
+                type="danger"
+              />
+            </span>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane name="invalidated">
+          <template #label>
+            <span>
+              已作废
+              <el-badge
+                :value="invalidatedProducts.length"
+                :max="99"
+                class="tab-badge"
+                type="info"
+              />
+            </span>
+          </template>
+        </el-tab-pane>
       </el-tabs>
 
       <el-table :data="currentList" stripe v-loading="loading">
@@ -541,6 +608,42 @@ const getProductStatus = (chain) => {
               <el-icon><Van /></el-icon>
               送检
             </el-button>
+
+            <!-- 被退回：重新加工 -->
+            <el-button
+              v-if="row.status === 'rejected'"
+              type="warning"
+              text
+              size="small"
+              @click="openProcessDialog(row)"
+            >
+              <el-icon><RefreshRight /></el-icon>
+              重新加工
+            </el-button>
+
+            <!-- 被退回：显示退回原因 -->
+            <el-tooltip
+              v-if="row.status === 'rejected' && row.reject_reason"
+              :content="row.reject_reason"
+              placement="top"
+            >
+              <el-tag type="danger" size="small">
+                <el-icon><Warning /></el-icon>
+                退回原因
+              </el-tag>
+            </el-tooltip>
+
+            <!-- 已作废：显示作废原因 -->
+            <el-tooltip
+              v-if="row.status === 'invalidated' && row.invalidated_reason"
+              :content="row.invalidated_reason"
+              placement="top"
+            >
+              <el-tag type="info" size="small">
+                <el-icon><InfoFilled /></el-icon>
+                作废原因
+              </el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
       </el-table>

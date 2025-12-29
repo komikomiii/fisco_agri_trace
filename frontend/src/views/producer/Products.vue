@@ -24,8 +24,12 @@ const statusCounts = reactive({
   draft: 0,
   on_chain: 0,
   all: 0,
-  invalidated: 0
+  invalidated: 0,
+  rejected: 0
 })
+
+// 被退回产品列表
+const rejectedProducts = ref([])
 
 // 搜索表单
 const searchForm = reactive({
@@ -42,10 +46,12 @@ const chainStatusMap = {
   DRAFT: { label: '未上链', type: 'warning', icon: 'EditPen' },
   ON_CHAIN: { label: '已上链', type: 'success', icon: 'CircleCheckFilled' },
   INVALIDATED: { label: '已作废', type: 'info', icon: 'Delete' },
+  REJECTED: { label: '被退回', type: 'danger', icon: 'RefreshLeft' },
   // 兼容前端小写格式
   draft: { label: '未上链', type: 'warning', icon: 'EditPen' },
   on_chain: { label: '已上链', type: 'success', icon: 'CircleCheckFilled' },
-  invalidated: { label: '已作废', type: 'info', icon: 'Delete' }
+  invalidated: { label: '已作废', type: 'info', icon: 'Delete' },
+  rejected: { label: '被退回', type: 'danger', icon: 'RefreshLeft' }
 }
 
 // Tab 切换
@@ -57,20 +63,23 @@ const fetchProducts = async () => {
 
   loading.value = true
   try {
-    // 同时获取正常产品和已作废产品
-    const [normalProducts, invalidatedProducts] = await Promise.all([
+    // 同时获取正常产品、已作废产品和被退回产品
+    const [normalProducts, invalidatedProducts, rejected] = await Promise.all([
       producerApi.getProducts(null),
-      producerApi.getInvalidatedProducts()
+      producerApi.getInvalidatedProducts(),
+      producerApi.getRejectedProducts()
     ])
 
     // 合并所有产品
     const allProducts = [...normalProducts, ...invalidatedProducts]
     products.value = allProducts
+    rejectedProducts.value = rejected
 
     // 更新各状态数量
     statusCounts.draft = normalProducts.filter(p => p.status === 'DRAFT').length
     statusCounts.on_chain = normalProducts.filter(p => p.status === 'ON_CHAIN').length
     statusCounts.invalidated = invalidatedProducts.length
+    statusCounts.rejected = rejected.length
     statusCounts.all = allProducts.length
   } catch (error) {
     ElMessage.error('获取产品列表失败')
@@ -88,6 +97,21 @@ const handleTabChange = () => {
 // 筛选后的产品列表
 const filteredProducts = computed(() => {
   if (USE_REAL_API) {
+    // 被退回产品使用单独的列表
+    if (activeTab.value === 'rejected') {
+      let list = [...rejectedProducts.value]
+
+      // 应用搜索过滤
+      if (searchForm.name) {
+        list = list.filter(p => p.name.includes(searchForm.name))
+      }
+      if (searchForm.category) {
+        list = list.filter(p => p.category === searchForm.category)
+      }
+
+      return list
+    }
+
     let list = [...products.value]
 
     // Tab name 到状态值的映射
@@ -785,6 +809,71 @@ const parseAmendData = (dataStr) => {
   }
 }
 
+// ==================== 被退回产品重新提交 ====================
+const resubmitDialogVisible = ref(false)
+const resubmitConfirmVisible = ref(false)
+const resubmitConfirmRef = ref(null)
+const resubmitForm = ref({
+  productId: null,
+  name: '',
+  category: '',
+  origin: '',
+  quantity: 0,
+  unit: 'kg',
+  remark: ''
+})
+const resubmitProduct = ref(null)
+
+const openResubmitDialog = (product) => {
+  resubmitProduct.value = product
+  resubmitForm.value = {
+    productId: product.id,
+    name: product.name,
+    category: product.category,
+    origin: product.origin,
+    quantity: product.quantity,
+    unit: product.unit,
+    remark: ''
+  }
+  resubmitDialogVisible.value = true
+}
+
+const handleResubmitNext = () => {
+  if (!resubmitForm.value.name || !resubmitForm.value.category) {
+    ElMessage.warning('请填写完整信息')
+    return
+  }
+  resubmitDialogVisible.value = false
+  resubmitConfirmVisible.value = true
+}
+
+const onResubmitConfirm = async () => {
+  if (!resubmitForm.value.productId) return
+
+  resubmitConfirmRef.value?.setLoading()
+
+  try {
+    const result = await producerApi.resubmitProduct(resubmitForm.value.productId, {
+      name: resubmitForm.value.name,
+      category: resubmitForm.value.category,
+      origin: resubmitForm.value.origin,
+      quantity: resubmitForm.value.quantity,
+      unit: resubmitForm.value.unit,
+      remark: resubmitForm.value.remark
+    })
+
+    resubmitConfirmRef.value?.setSuccess(
+      result.trace_code,
+      result.block_number,
+      result.tx_hash
+    )
+    ElMessage.success(result.message || '产品已重新提交')
+    fetchProducts()
+  } catch (error) {
+    resubmitConfirmRef.value?.setError(error.response?.data?.detail || error.message || '重新提交失败')
+  }
+}
+
 // 重置搜索
 const resetSearch = () => {
   searchForm.name = ''
@@ -873,6 +962,20 @@ const resetSearch = () => {
             </span>
           </template>
         </el-tab-pane>
+        <el-tab-pane label="被退回" name="rejected">
+          <template #label>
+            <span class="tab-label">
+              <el-icon><RefreshLeft /></el-icon>
+              被退回
+              <el-badge
+                :value="statusCounts.rejected"
+                :max="99"
+                class="tab-badge"
+                type="danger"
+              />
+            </span>
+          </template>
+        </el-tab-pane>
       </el-tabs>
 
       <el-table :data="filteredProducts" stripe style="width: 100%" v-loading="loading" :header-cell-style="{ background: '#f5f7fa', color: '#606266' }">
@@ -927,10 +1030,18 @@ const resetSearch = () => {
             </el-tooltip>
           </template>
         </el-table-column>
+        <el-table-column v-if="activeTab === 'rejected'" label="退回原因" min-width="180">
+          <template #default="{ row }">
+            <div class="reject-reason">
+              <el-icon class="reject-icon"><WarningFilled /></el-icon>
+              <span>{{ row.reject_reason || '未填写原因' }}</span>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column prop="status" label="状态" width="100" align="center">
           <template #default="{ row }">
-            <el-tag :type="chainStatusMap[row.status]?.type || 'info'" size="small">
-              {{ chainStatusMap[row.status]?.label || row.status }}
+            <el-tag :type="chainStatusMap[row.status]?.type || (activeTab === 'rejected' ? 'danger' : 'info')" size="small">
+              {{ activeTab === 'rejected' ? '被退回' : (chainStatusMap[row.status]?.label || row.status) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -962,6 +1073,17 @@ const resetSearch = () => {
               <el-button type="danger" text size="small" @click="handleInvalidate(row)">
                 <el-icon><Delete /></el-icon>
                 作废
+              </el-button>
+            </template>
+
+            <!-- 被退回状态的操作 -->
+            <template v-else-if="activeTab === 'rejected'">
+              <el-button type="primary" text size="small" @click="viewDetail(row)">
+                查看详情
+              </el-button>
+              <el-button type="warning" text size="small" @click="openResubmitDialog(row)">
+                <el-icon><RefreshRight /></el-icon>
+                修改重新提交
               </el-button>
             </template>
 
@@ -1250,6 +1372,89 @@ const resetSearch = () => {
       :block-number="verifyBlockNumber"
       :product-data="detailChain"
     />
+
+    <!-- 被退回产品重新提交对话框 -->
+    <el-dialog v-model="resubmitDialogVisible" title="修改并重新提交" width="560px">
+      <div class="resubmit-tip">
+        <el-icon><WarningFilled /></el-icon>
+        <span>产品 <strong>{{ resubmitProduct?.name }}</strong> 被退回，请修改信息后重新提交</span>
+      </div>
+      <div v-if="resubmitProduct?.reject_reason" class="reject-reason-box">
+        <span class="label">退回原因：</span>
+        <span class="reason">{{ resubmitProduct.reject_reason }}</span>
+      </div>
+      <el-form :model="resubmitForm" label-width="100px" style="margin-top: 20px;">
+        <el-form-item label="产品名称" required>
+          <el-input v-model="resubmitForm.name" placeholder="请输入产品名称" />
+        </el-form-item>
+        <el-form-item label="产品类别" required>
+          <el-select v-model="resubmitForm.category" placeholder="请选择类别" style="width: 100%">
+            <el-option v-for="cat in categories" :key="cat" :label="cat" :value="cat" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="产地">
+          <el-input v-model="resubmitForm.origin" placeholder="请输入产地" />
+        </el-form-item>
+        <el-form-item label="数量">
+          <el-input-number v-model="resubmitForm.quantity" :min="0" style="width: 200px" />
+          <el-select v-model="resubmitForm.unit" style="width: 80px; margin-left: 10px">
+            <el-option label="kg" value="kg" />
+            <el-option label="只" value="只" />
+            <el-option label="箱" value="箱" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="修改说明">
+          <el-input
+            v-model="resubmitForm.remark"
+            type="textarea"
+            :rows="2"
+            placeholder="请说明修改内容"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resubmitDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleResubmitNext">
+          <el-icon><RefreshRight /></el-icon>
+          下一步
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重新提交上链确认 -->
+    <ChainConfirm
+      ref="resubmitConfirmRef"
+      v-model:visible="resubmitConfirmVisible"
+      title="确认重新提交上链"
+      :data="{
+        name: resubmitForm.name,
+        category: resubmitForm.category,
+        origin: resubmitForm.origin,
+        quantity: `${resubmitForm.quantity} ${resubmitForm.unit}`,
+        remark: resubmitForm.remark || '无'
+      }"
+      :data-labels="{
+        name: '产品名称',
+        category: '产品类别',
+        origin: '产地',
+        quantity: '数量',
+        remark: '修改说明'
+      }"
+      @confirm="onResubmitConfirm"
+    >
+      <template #extra>
+        <div class="resubmit-info">
+          <div class="info-item">
+            <span class="label">溯源码：</span>
+            <span class="value code">{{ resubmitProduct?.trace_code }}</span>
+          </div>
+          <div class="info-item">
+            <span class="label">操作类型：</span>
+            <span class="value">修改后重新提交到公共池</span>
+          </div>
+        </div>
+      </template>
+    </ChainConfirm>
   </div>
 </template>
 
@@ -1625,6 +1830,94 @@ const resetSearch = () => {
   margin-top: 8px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* 退回原因样式 */
+.reject-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: #f56c6c;
+  font-size: 13px;
+}
+
+.reject-reason .reject-icon {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+/* 重新提交对话框样式 */
+.resubmit-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  color: #856404;
+}
+
+.resubmit-tip .el-icon {
+  font-size: 20px;
+  color: #ffc107;
+}
+
+.resubmit-tip strong {
+  color: #d63384;
+}
+
+.reject-reason-box {
+  margin-top: 12px;
+  padding: 12px 16px;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  border-radius: 8px;
+}
+
+.reject-reason-box .label {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.reject-reason-box .reason {
+  color: #f56c6c;
+  font-weight: 500;
+}
+
+.resubmit-info {
+  margin-top: 16px;
+  padding: 16px;
+  background: linear-gradient(135deg, rgba(230, 162, 60, 0.1), rgba(230, 162, 60, 0.05));
+  border: 1px solid rgba(230, 162, 60, 0.3);
+  border-radius: 10px;
+}
+
+.resubmit-info .info-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.resubmit-info .info-item:not(:last-child) {
+  border-bottom: 1px dashed rgba(230, 162, 60, 0.2);
+}
+
+.resubmit-info .label {
+  color: var(--text-muted);
+  font-size: 13px;
+  min-width: 80px;
+}
+
+.resubmit-info .value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.resubmit-info .value.code {
+  font-family: monospace;
+  color: #667eea;
 }
 
 </style>

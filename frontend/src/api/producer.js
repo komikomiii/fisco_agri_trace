@@ -40,6 +40,11 @@ export const producerApi = {
     return api.get('/producer/invalidated')
   },
 
+  // 获取被退回的产品列表
+  getRejectedProducts() {
+    return api.get('/producer/rejected')
+  },
+
   // 提交上链
   submitToChain(id) {
     return api.post(`/producer/products/${id}/submit`)
@@ -63,5 +68,10 @@ export const producerApi = {
   // 获取加工商列表（用于指定发送）
   getProcessors() {
     return api.get('/producer/processors')
+  },
+
+  // 重新提交被退回的产品
+  resubmitProduct(id, data) {
+    return api.post(`/producer/products/${id}/resubmit`, data)
   }
 }

@@ -334,6 +334,78 @@ async def get_product_chain_data(trace_code: str):
         db.close()
 
 
+@router.get("/products/invalidated")
+async def get_invalidated_products(
+    user_role: str = None,
+    user_id: int = None
+):
+    """
+    获取已作废的产品列表
+    所有参与过该产品链的用户都可以看到
+
+    参数:
+    - user_role: 可选，过滤参与角色
+    - user_id: 可选，过滤参与用户ID
+    """
+    from app.models.product import ProductRecord, RecordAction
+
+    db = next(get_db())
+
+    try:
+        # 查询所有已作废的产品
+        products = db.query(Product).filter(
+            Product.status == ProductStatus.INVALIDATED
+        ).order_by(Product.invalidated_at.desc()).all()
+
+        result = []
+        for product in products:
+            # 获取作废操作人
+            invalidator = None
+            if product.invalidated_by:
+                invalidator = db.query(User).filter(User.id == product.invalidated_by).first()
+
+            # 获取创建者
+            creator = db.query(User).filter(User.id == product.creator_id).first()
+
+            # 获取参与者列表（从记录中提取）
+            records = db.query(ProductRecord).filter(
+                ProductRecord.product_id == product.id
+            ).all()
+
+            participants = set()
+            for record in records:
+                if record.operator_id:
+                    participants.add(record.operator_id)
+
+            # 如果指定了用户ID，检查是否参与过
+            if user_id and user_id not in participants and product.creator_id != user_id:
+                continue
+
+            result.append({
+                "id": product.id,
+                "trace_code": product.trace_code,
+                "name": product.name,
+                "category": product.category,
+                "origin": product.origin,
+                "quantity": product.quantity,
+                "unit": product.unit,
+                "invalidated_at": product.invalidated_at.isoformat() if product.invalidated_at else None,
+                "invalidated_reason": product.invalidated_reason,
+                "invalidated_by": invalidator.real_name if invalidator else None,
+                "creator_name": creator.real_name if creator else None,
+                "tx_hash": product.tx_hash,
+                "block_number": product.block_number
+            })
+
+        return result
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"获取已作废产品失败: {str(e)}")
+    finally:
+        db.close()
+
+
 @router.get("/health")
 async def blockchain_health():
     """

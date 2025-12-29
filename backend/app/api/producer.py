@@ -633,6 +633,172 @@ async def amend_product(
     return record
 
 
+class ResubmitRequest(BaseModel):
+    """重新提交请求"""
+    name: Optional[str] = None
+    category: Optional[str] = None
+    origin: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    remark: Optional[str] = None
+
+
+@router.post("/products/{product_id}/resubmit")
+async def resubmit_rejected_product(
+    product_id: int,
+    data: ResubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    重新提交被退回的产品
+    - 更新产品信息（如有修改）
+    - 创建重新提交记录并上链
+    - 将产品重新发送到加工商阶段
+    """
+    check_producer_role(current_user)
+
+    # 查询产品
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.current_holder_id == current_user.id,
+        Product.current_stage == ProductStage.PRODUCER
+    ).first()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="产品不存在或无权操作")
+
+    # 检查是否有退回记录
+    reject_record = db.query(ProductRecord).filter(
+        ProductRecord.product_id == product_id,
+        ProductRecord.action == RecordAction.REJECT
+    ).first()
+
+    if not reject_record:
+        raise HTTPException(status_code=400, detail="该产品未被退回")
+
+    # 更新产品信息（如有提供）
+    if data.name:
+        product.name = data.name
+    if data.category:
+        product.category = data.category
+    if data.origin:
+        product.origin = data.origin
+    if data.quantity:
+        product.quantity = data.quantity
+    if data.unit:
+        product.unit = data.unit
+
+    # 准备上链数据
+    operator_name = current_user.real_name or current_user.username
+    resubmit_data = {
+        "action": "resubmit",
+        "name": product.name,
+        "category": product.category,
+        "origin": product.origin,
+        "quantity": product.quantity,
+        "unit": product.unit,
+        "remark": data.remark or "修改后重新提交"
+    }
+
+    # 调用区块链添加记录
+    success, tx_hash, block_number = blockchain_client.add_record(
+        trace_code=product.trace_code,
+        stage=0,  # PRODUCER
+        action=5,  # CREATE (重新创建)
+        data=json.dumps(resubmit_data, ensure_ascii=False),
+        remark=f"重新提交: {data.remark or '修改后重新提交'}",
+        operator_name=operator_name
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="区块链记录失败")
+
+    # 更新产品阶段 - 重新发送到公共池
+    product.current_stage = ProductStage.PROCESSOR
+    product.current_holder_id = None  # 清空持有者，进入公共池
+    product.updated_at = datetime.now()
+
+    # 创建重新提交记录
+    record = ProductRecord(
+        product_id=product.id,
+        stage=ProductStage.PRODUCER,
+        action=RecordAction.CREATE,  # 使用 CREATE 表示重新提交
+        data=json.dumps(resubmit_data, ensure_ascii=False),
+        remark=f"重新提交: {data.remark or '修改后重新提交'}",
+        operator_id=current_user.id,
+        operator_name=operator_name,
+        tx_hash=tx_hash,
+        block_number=block_number
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(product)
+
+    return {
+        "id": product.id,
+        "trace_code": product.trace_code,
+        "name": product.name,
+        "tx_hash": tx_hash,
+        "block_number": block_number,
+        "message": "产品已重新提交，等待加工商领取"
+    }
+
+
+@router.get("/rejected")
+async def get_rejected_products(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取被退回的产品列表
+    - 当前持有者为当前用户
+    - 当前阶段为原料商 (PRODUCER)
+    - 有退回记录
+    """
+    check_producer_role(current_user)
+
+    # 查询当前持有且有退回记录的产品
+    products = db.query(Product).filter(
+        Product.current_holder_id == current_user.id,
+        Product.current_stage == ProductStage.PRODUCER
+    ).all()
+
+    result = []
+    for p in products:
+        # 检查是否有退回记录
+        reject_record = db.query(ProductRecord).filter(
+            ProductRecord.product_id == p.id,
+            ProductRecord.action == RecordAction.REJECT
+        ).order_by(ProductRecord.created_at.desc()).first()
+
+        if reject_record:
+            # 解析退回信息
+            reject_data = {}
+            if reject_record.data:
+                try:
+                    reject_data = json.loads(reject_record.data) if isinstance(reject_record.data, str) else reject_record.data
+                except:
+                    reject_data = {}
+
+            result.append({
+                "id": p.id,
+                "trace_code": p.trace_code,
+                "name": p.name,
+                "category": p.category,
+                "origin": p.origin,
+                "quantity": p.quantity,
+                "unit": p.unit,
+                "reject_reason": reject_data.get("reason", reject_record.remark or ""),
+                "reject_issues": reject_data.get("issues", ""),
+                "rejected_at": reject_record.created_at.isoformat() if reject_record.created_at else None,
+                "rejected_by": reject_record.operator_name,
+                "status": "rejected"
+            })
+
+    return result
+
+
 @router.get("/statistics")
 async def get_statistics(
     db: Session = Depends(get_db),

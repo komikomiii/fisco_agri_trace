@@ -92,7 +92,8 @@ const onStartInspectConfirm = async () => {
 
 // ==================== 完成检测 ====================
 const inspectVisible = ref(false)
-const inspectConfirmVisible = ref(false)  // 新增：上链确认对话框
+const inspectConfirmVisible = ref(false)  // 上链确认对话框
+const unqualifiedActionVisible = ref(false)  // 不合格处理方式选择对话框
 const inspectForm = ref({
   productId: null,
   productName: '',
@@ -101,7 +102,11 @@ const inspectForm = ref({
   qualityGrade: 'A',
   inspectResult: '',
   issues: '',
-  notes: ''
+  notes: '',
+  // 不合格处理
+  unqualifiedAction: 'reject',  // reject=退回, invalidate=作废
+  rejectToStage: 'processor',   // 退回到哪个阶段: processor/producer
+  rejectReason: ''              // 退回/作废原因
 })
 const inspectRef = ref(null)
 
@@ -114,7 +119,10 @@ const openInspect = (product) => {
     qualityGrade: 'A',
     inspectResult: '',
     issues: '',
-    notes: ''
+    notes: '',
+    unqualifiedAction: 'reject',
+    rejectToStage: 'processor',
+    rejectReason: ''
   }
   inspectVisible.value = true
 }
@@ -127,8 +135,25 @@ const onInspectConfirm = async () => {
     return
   }
 
-  // 关闭表单对话框，打开确认对话框
+  // 关闭表单对话框
   inspectVisible.value = false
+
+  // 如果不合格，先选择处理方式
+  if (!inspectForm.value.qualified) {
+    unqualifiedActionVisible.value = true
+  } else {
+    // 合格直接打开确认对话框
+    inspectConfirmVisible.value = true
+  }
+}
+
+// 不合格处理方式确认
+const onUnqualifiedActionConfirm = () => {
+  if (!inspectForm.value.rejectReason) {
+    ElMessage.warning('请填写原因')
+    return
+  }
+  unqualifiedActionVisible.value = false
   inspectConfirmVisible.value = true
 }
 
@@ -146,7 +171,11 @@ const onInspectChainConfirm = async () => {
         quality_grade: inspectForm.value.qualityGrade,
         inspect_result: inspectForm.value.inspectResult,
         issues: inspectForm.value.issues,
-        notes: inspectForm.value.notes
+        notes: inspectForm.value.notes,
+        // 不合格处理参数
+        unqualified_action: inspectForm.value.unqualifiedAction,
+        reject_to_stage: inspectForm.value.rejectToStage,
+        reject_reason: inspectForm.value.rejectReason
       }
     )
 
@@ -154,8 +183,11 @@ const onInspectChainConfirm = async () => {
 
     if (result.qualified) {
       ElMessage.success('检测合格，产品已进入销售环节')
+    } else if (result.action === 'invalidate') {
+      ElMessage.warning('产品已作废，所有参与者可在已作废列表中查看')
     } else {
-      ElMessage.warning('检测不合格，产品已被标记')
+      const stageLabel = result.reject_to_stage === 'producer' ? '原料商' : '加工商'
+      ElMessage.warning(`检测不合格，产品已退回${stageLabel}`)
     }
 
     await fetchTestingProducts()
@@ -542,23 +574,101 @@ const translateRemark = (remark) => {
       ref="startInspectRef"
     />
 
+    <!-- 不合格处理方式选择对话框 -->
+    <el-dialog v-model="unqualifiedActionVisible" title="选择处理方式" width="500px">
+      <div class="unqualified-tip">
+        <el-icon><WarningFilled /></el-icon>
+        <span>产品 <strong>{{ inspectForm.productName }}</strong> 检测不合格，请选择处理方式</span>
+      </div>
+
+      <el-form :model="inspectForm" label-width="100px">
+        <el-form-item label="处理方式" required>
+          <el-radio-group v-model="inspectForm.unqualifiedAction">
+            <el-radio value="reject">
+              <span class="action-label">
+                <el-icon><RefreshLeft /></el-icon>
+                退回重新处理
+              </span>
+            </el-radio>
+            <el-radio value="invalidate">
+              <span class="action-label">
+                <el-icon><Delete /></el-icon>
+                作废产品
+              </span>
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <!-- 退回时选择退回到哪个阶段 -->
+        <el-form-item v-if="inspectForm.unqualifiedAction === 'reject'" label="退回到" required>
+          <el-radio-group v-model="inspectForm.rejectToStage">
+            <el-radio value="processor">
+              <span class="stage-option">
+                <el-icon><SetUp /></el-icon>
+                加工商（重新加工）
+              </span>
+            </el-radio>
+            <el-radio value="producer">
+              <span class="stage-option">
+                <el-icon><Crop /></el-icon>
+                原料商（原料问题）
+              </span>
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item :label="inspectForm.unqualifiedAction === 'invalidate' ? '作废原因' : '退回原因'" required>
+          <el-input
+            v-model="inspectForm.rejectReason"
+            type="textarea"
+            :rows="3"
+            :placeholder="inspectForm.unqualifiedAction === 'invalidate' ? '请说明作废原因' : '请说明退回原因'"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="unqualifiedActionVisible = false">取消</el-button>
+        <el-button
+          :type="inspectForm.unqualifiedAction === 'invalidate' ? 'danger' : 'warning'"
+          @click="onUnqualifiedActionConfirm"
+        >
+          <el-icon>
+            <Delete v-if="inspectForm.unqualifiedAction === 'invalidate'" />
+            <RefreshLeft v-else />
+          </el-icon>
+          {{ inspectForm.unqualifiedAction === 'invalidate' ? '确认作废' : '确认退回' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 完成检测上链确认弹窗 -->
     <ChainConfirm
       v-model:visible="inspectConfirmVisible"
-      title="确认上链"
-      :data="{
+      :title="inspectForm.qualified ? '确认上链' : (inspectForm.unqualifiedAction === 'invalidate' ? '确认作废上链' : '确认退回上链')"
+      :data="inspectForm.qualified ? {
         product: inspectForm.productName || '',
-        qualified: inspectForm.qualified ? '合格' : '不合格',
+        qualified: '合格',
         qualityGrade: `${inspectForm.qualityGrade}级`,
-        inspectResult: inspectForm.inspectResult,
-        issues: inspectForm.issues || '无'
+        inspectResult: inspectForm.inspectResult
+      } : {
+        product: inspectForm.productName || '',
+        qualified: '不合格',
+        action: inspectForm.unqualifiedAction === 'invalidate' ? '作废产品' : `退回${inspectForm.rejectToStage === 'producer' ? '原料商' : '加工商'}`,
+        issues: inspectForm.issues || '无',
+        reason: inspectForm.rejectReason
       }"
-      :data-labels="{
+      :data-labels="inspectForm.qualified ? {
         product: '产品名称',
         qualified: '检测结果',
         qualityGrade: '质量等级',
-        inspectResult: '检测描述',
-        issues: '存在问题'
+        inspectResult: '检测描述'
+      } : {
+        product: '产品名称',
+        qualified: '检测结果',
+        action: '处理方式',
+        issues: '存在问题',
+        reason: inspectForm.unqualifiedAction === 'invalidate' ? '作废原因' : '退回原因'
       }"
       :loading="false"
       @confirm="onInspectChainConfirm"
@@ -903,5 +1013,39 @@ const translateRemark = (remark) => {
   font-size: 12px;
   color: var(--text-muted);
   margin-left: 8px;
+}
+
+/* 不合格处理对话框样式 */
+.unqualified-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  color: #856404;
+}
+
+.unqualified-tip .el-icon {
+  font-size: 20px;
+  color: #ffc107;
+}
+
+.unqualified-tip strong {
+  color: #d63384;
+}
+
+.action-label,
+.stage-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-label .el-icon,
+.stage-option .el-icon {
+  font-size: 14px;
 }
 </style>

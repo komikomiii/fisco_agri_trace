@@ -51,6 +51,7 @@ class ProcessRequest(BaseModel):
     result_quantity: float  # 加工后数量
     process_date: Optional[datetime] = None
     notes: Optional[str] = None
+    auto_send_inspect: Optional[bool] = None  # 是否自动送检（用于重新加工场景）
 
 
 class SendInspectRequest(BaseModel):
@@ -321,7 +322,93 @@ async def process_product(
     db.commit()
     db.refresh(record)
 
-    return {
+    # 6. 检查是否需要自动送检（重新加工的产品）
+    auto_send = process_data.auto_send_inspect
+    if auto_send is None:
+        # 如果没有明确指定，检查是否是被退回的产品（有REJECT记录）
+        has_reject_record = db.query(ProductRecord).filter(
+            ProductRecord.product_id == product.id,
+            ProductRecord.action == RecordAction.REJECT
+        ).first()
+        auto_send = has_reject_record is not None
+
+    send_inspect_result = None
+    if auto_send:
+        # 自动执行送检流程
+        try:
+            # 准备送检数据
+            send_chain_data = {
+                "inspection_type": "quality",
+                "send_date": datetime.now().isoformat(),
+                "notes": "重新加工完成，自动送检"
+            }
+
+            # 调用智能合约添加送检记录
+            send_success, send_tx_hash, send_block_number = blockchain_client.add_record(
+                trace_code=product.trace_code,
+                stage=1,  # ProductStage.PROCESSOR
+                action=2,  # RecordAction.SEND_INSPECT
+                data=json.dumps(send_chain_data, default=str, ensure_ascii=False),
+                remark="送检: 质量检测",
+                operator_name=current_user.real_name or current_user.username
+            )
+
+            if send_success:
+                # 查找质检员
+                inspector = db.query(User).filter(User.role == UserRole.INSPECTOR).first()
+                if inspector:
+                    # 转移产品到质检阶段
+                    transfer_data = {
+                        "action": "send_inspect",
+                        "from_processor": current_user.username,
+                        "to_inspector": inspector.username
+                    }
+
+                    transfer_success, transfer_tx_hash, transfer_block = blockchain_client.transfer_product(
+                        trace_code=product.trace_code,
+                        new_holder=inspector.blockchain_address or inspector.username,
+                        new_stage="inspector",
+                        data=json.dumps(transfer_data, ensure_ascii=False),
+                        remark="加工商送检",
+                        operator_name=current_user.real_name or current_user.username
+                    )
+
+                    if transfer_success:
+                        # 更新产品状态
+                        product.current_stage = ProductStage.INSPECTOR
+                        product.current_holder_id = inspector.id
+                        product.tx_hash = transfer_tx_hash
+                        product.block_number = transfer_block
+                        product.updated_at = datetime.now()
+
+                        # 创建送检记录
+                        send_record = ProductRecord(
+                            product_id=product.id,
+                            stage=ProductStage.PROCESSOR,
+                            action=RecordAction.SEND_INSPECT,
+                            data=json.dumps(send_chain_data, default=str, ensure_ascii=False),
+                            remark="送检: 质量检测",
+                            operator_id=current_user.id,
+                            operator_name=current_user.real_name or current_user.username,
+                            tx_hash=send_tx_hash,
+                            block_number=send_block_number
+                        )
+                        db.add(send_record)
+                        db.commit()
+
+                        send_inspect_result = {
+                            "success": True,
+                            "tx_hash": transfer_tx_hash,
+                            "block_number": transfer_block
+                        }
+        except Exception as e:
+            # 送检失败不影响加工结果，只是记录失败
+            send_inspect_result = {
+                "success": False,
+                "error": str(e)
+            }
+
+    result = {
         "message": "加工处理成功",
         "product_id": product.id,
         "trace_code": product.trace_code,
@@ -331,6 +418,15 @@ async def process_product(
         "block_number": block_number,
         "record_id": record.id
     }
+
+    if send_inspect_result:
+        result["auto_send_inspect"] = send_inspect_result
+        if send_inspect_result.get("success"):
+            result["message"] = "加工处理成功，已自动送检"
+            result["tx_hash"] = send_inspect_result["tx_hash"]
+            result["block_number"] = send_inspect_result["block_number"]
+
+    return result
 
 
 @router.post("/products/{product_id}/send-inspect")
@@ -368,14 +464,23 @@ async def send_inspect_product(
     if not has_process_record:
         raise HTTPException(status_code=400, detail="产品尚未加工，无法送检")
 
-    # 3. 检查是否已送检
-    has_send_inspect_record = db.query(ProductRecord).filter(
+    # 3. 检查是否已送检（需要考虑重新加工的情况）
+    # 获取最新的送检记录
+    latest_send_inspect = db.query(ProductRecord).filter(
         ProductRecord.product_id == product.id,
         ProductRecord.action == RecordAction.SEND_INSPECT
-    ).first()
+    ).order_by(ProductRecord.created_at.desc()).first()
 
-    if has_send_inspect_record:
-        raise HTTPException(status_code=400, detail="产品已送检，请勿重复操作")
+    # 获取最新的加工记录
+    latest_process = db.query(ProductRecord).filter(
+        ProductRecord.product_id == product.id,
+        ProductRecord.action == RecordAction.PROCESS
+    ).order_by(ProductRecord.created_at.desc()).first()
+
+    # 如果有送检记录，且最新加工在送检之前或没有新加工，则阻止重复送检
+    if latest_send_inspect:
+        if not latest_process or latest_process.created_at <= latest_send_inspect.created_at:
+            raise HTTPException(status_code=400, detail="产品已送检，请勿重复操作")
 
     # 4. 准备上链数据
     chain_data = {
@@ -562,7 +667,8 @@ async def list_processing_products(
     获取加工中产品列表
     - 当前持有者为当前用户
     - 当前阶段为加工商
-    - 有加工记录但没有送检记录
+    - 有加工记录
+    - 且最近的加工记录在最近的送检记录之后（或没有送检记录）
     """
     check_processor_role(current_user)
 
@@ -572,37 +678,45 @@ async def list_processing_products(
         Product.current_stage == ProductStage.PROCESSOR
     ).all()
 
-    # 筛选出有加工记录但没有送检记录的产品
+    # 筛选出有加工记录且未送检（或重新加工后未送检）的产品
     result = []
     for p in products:
-        # 检查是否有加工记录
-        process_record = db.query(ProductRecord).filter(
+        # 获取最近的加工记录
+        latest_process_record = db.query(ProductRecord).filter(
             ProductRecord.product_id == p.id,
             ProductRecord.action == RecordAction.PROCESS
-        ).first()
+        ).order_by(ProductRecord.created_at.desc()).first()
 
-        # 检查是否有送检记录
-        has_inspect_record = db.query(ProductRecord).filter(
+        if not latest_process_record:
+            continue
+
+        # 获取最近的送检记录
+        latest_send_inspect_record = db.query(ProductRecord).filter(
             ProductRecord.product_id == p.id,
-            ProductRecord.action.in_([RecordAction.SEND_INSPECT, RecordAction.INSPECT])
-        ).first()
+            ProductRecord.action == RecordAction.SEND_INSPECT
+        ).order_by(ProductRecord.created_at.desc()).first()
 
-        if process_record and not has_inspect_record:
-            # 从记录数据中获取加工信息
-            record_data = process_record.data if isinstance(process_record.data, dict) else json.loads(process_record.data) if process_record.data else {}
+        # 如果有送检记录，检查最近的加工是否在送检之后（重新加工的情况）
+        if latest_send_inspect_record:
+            if latest_process_record.created_at <= latest_send_inspect_record.created_at:
+                # 最近的加工在送检之前，说明还没有重新加工
+                continue
 
-            result.append({
-                "id": p.id,
-                "trace_code": p.trace_code,
-                "name": p.name,  # 现在是成品名称(已被更新)
-                "category": p.category,
-                "quantity": p.quantity,  # 现在是成品数量
-                "unit": p.unit,
-                "process_type": record_data.get("process_type", ""),
-                "output_product": record_data.get("result_product", ""),
-                "output_quantity": record_data.get("result_quantity", 0),
-                "status": "processing"
-            })
+        # 从记录数据中获取加工信息
+        record_data = latest_process_record.data if isinstance(latest_process_record.data, dict) else json.loads(latest_process_record.data) if latest_process_record.data else {}
+
+        result.append({
+            "id": p.id,
+            "trace_code": p.trace_code,
+            "name": p.name,  # 现在是成品名称(已被更新)
+            "category": p.category,
+            "quantity": p.quantity,  # 现在是成品数量
+            "unit": p.unit,
+            "process_type": record_data.get("process_type", ""),
+            "output_product": record_data.get("result_product", ""),
+            "output_quantity": record_data.get("result_quantity", 0),
+            "status": "processing"
+        })
 
     return result
 
@@ -668,5 +782,120 @@ async def list_sent_products(
                 "output_quantity": record_data.get("result_quantity", 0),
                 "status": "sent"
             })
+
+    return result
+
+
+@router.get("/products/rejected")
+async def list_rejected_products(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取被退回的产品列表
+    - 当前持有者为当前用户
+    - 当前阶段为加工商 (PROCESSOR)
+    - 有退回记录
+    - 且退回后没有新的加工记录（未重新加工）
+    """
+    check_processor_role(current_user)
+
+    # 查询当前持有且有退回记录的产品
+    products = db.query(Product).filter(
+        Product.current_holder_id == current_user.id,
+        Product.current_stage == ProductStage.PROCESSOR
+    ).all()
+
+    result = []
+    for p in products:
+        # 检查是否有退回记录
+        reject_record = db.query(ProductRecord).filter(
+            ProductRecord.product_id == p.id,
+            ProductRecord.action == RecordAction.REJECT
+        ).order_by(ProductRecord.created_at.desc()).first()
+
+        if reject_record:
+            # 检查退回后是否有新的加工记录（重新加工过）
+            reprocess_record = db.query(ProductRecord).filter(
+                ProductRecord.product_id == p.id,
+                ProductRecord.action == RecordAction.PROCESS,
+                ProductRecord.created_at > reject_record.created_at
+            ).first()
+
+            # 如果已经重新加工过，跳过这个产品
+            if reprocess_record:
+                continue
+
+            # 解析退回信息
+            reject_data = {}
+            if reject_record.data:
+                try:
+                    reject_data = json.loads(reject_record.data) if isinstance(reject_record.data, str) else reject_record.data
+                except:
+                    reject_data = {}
+
+            result.append({
+                "id": p.id,
+                "trace_code": p.trace_code,
+                "name": p.name,
+                "category": p.category,
+                "quantity": p.quantity,
+                "unit": p.unit,
+                "reject_reason": reject_data.get("reason", reject_record.remark or ""),
+                "reject_issues": reject_data.get("issues", ""),
+                "rejected_at": reject_record.created_at.isoformat() if reject_record.created_at else None,
+                "rejected_by": reject_record.operator_name,
+                "status": "rejected"
+            })
+
+    return result
+
+
+@router.get("/products/invalidated")
+async def list_invalidated_products(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    获取已作废的产品列表（当前用户参与过的）
+    """
+    check_processor_role(current_user)
+
+    # 查询当前用户参与过的已作废产品
+    # 通过 ProductRecord 找出当前用户操作过的产品
+    operated_product_ids = db.query(ProductRecord.product_id).filter(
+        ProductRecord.operator_id == current_user.id
+    ).distinct().all()
+
+    product_ids = [p[0] for p in operated_product_ids]
+
+    if not product_ids:
+        return []
+
+    # 查询这些产品中已作废的
+    products = db.query(Product).filter(
+        Product.id.in_(product_ids),
+        Product.status == ProductStatus.INVALIDATED
+    ).order_by(Product.invalidated_at.desc()).all()
+
+    result = []
+    for p in products:
+        # 获取作废操作人
+        invalidator = None
+        if p.invalidated_by:
+            invalidator = db.query(User).filter(User.id == p.invalidated_by).first()
+
+        result.append({
+            "id": p.id,
+            "trace_code": p.trace_code,
+            "name": p.name,
+            "category": p.category,
+            "quantity": p.quantity,
+            "unit": p.unit,
+            "invalidated_at": p.invalidated_at.isoformat() if p.invalidated_at else None,
+            "invalidated_reason": p.invalidated_reason,
+            "invalidated_by": invalidator.real_name if invalidator else None,
+            "status": "invalidated"
+        })
 
     return result

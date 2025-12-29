@@ -97,6 +97,22 @@ export const getStatistics = () => {
   return api.get('/processor/statistics')
 }
 
+/**
+ * 获取被退回的产品列表
+ * @returns {Promise} 产品列表
+ */
+export const getRejectedProducts = () => {
+  return api.get('/processor/products/rejected')
+}
+
+/**
+ * 获取已作废的产品列表
+ * @returns {Promise} 产品列表
+ */
+export const getInvalidatedProducts = () => {
+  return api.get('/processor/products/invalidated')
+}
+
 export default {
   getAvailableProducts,
   getReceivedProducts,
@@ -107,5 +123,7 @@ export default {
   processProduct,
   sendInspectProduct,
   getProductRecords,
-  getStatistics
+  getStatistics,
+  getRejectedProducts,
+  getInvalidatedProducts
 }

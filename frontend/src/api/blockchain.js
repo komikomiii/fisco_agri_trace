@@ -41,5 +41,11 @@ export const blockchainApi = {
   // 检查区块链健康状态
   getHealth() {
     return api.get('/blockchain/health')
+  },
+
+  // 获取已作废产品列表
+  getInvalidatedProducts(userId = null) {
+    const params = userId ? { user_id: userId } : {}
+    return api.get('/blockchain/products/invalidated', { params })
   }
 }

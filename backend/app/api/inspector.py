@@ -33,6 +33,10 @@ class InspectRequest(BaseModel):
     inspect_result: str  # 检测结果描述
     issues: Optional[str] = None  # 存在的问题
     notes: Optional[str] = None
+    # 不合格处理参数
+    unqualified_action: Optional[str] = "reject"  # reject=退回, invalidate=作废
+    reject_to_stage: Optional[str] = "processor"  # 退回到哪个阶段: processor/producer
+    reject_reason: Optional[str] = None  # 退回/作废原因
 
 
 def check_inspector_role(user: User):
@@ -49,7 +53,7 @@ async def list_pending_products(
     """
     获取待检测产品列表
     - 产品当前阶段为 INSPECTOR
-    - 还没有检测记录 (inspect action)
+    - 还没有检测记录，或最近的送检记录在最近的检测记录之后（重新送检的情况）
     """
     check_inspector_role(current_user)
 
@@ -58,33 +62,55 @@ async def list_pending_products(
         Product.current_stage == ProductStage.INSPECTOR
     ).all()
 
-    # 筛选出还没有检测记录的产品
+    # 筛选出待检测的产品
     result = []
     for product in products:
-        # 检查是否有检测记录
-        has_inspect = db.query(ProductRecord).filter(
+        # 获取最近的送检记录
+        latest_send_inspect = db.query(ProductRecord).filter(
+            ProductRecord.product_id == product.id,
+            ProductRecord.action == RecordAction.SEND_INSPECT
+        ).order_by(ProductRecord.created_at.desc()).first()
+
+        if not latest_send_inspect:
+            continue
+
+        # 获取最近的检测记录
+        latest_inspect = db.query(ProductRecord).filter(
             ProductRecord.product_id == product.id,
             ProductRecord.action == RecordAction.INSPECT
-        ).first()
+        ).order_by(ProductRecord.created_at.desc()).first()
 
-        # 也检查是否有开始检测记录
-        has_start = db.query(ProductRecord).filter(
+        # 获取最近的开始检测记录
+        latest_start_inspect = db.query(ProductRecord).filter(
             ProductRecord.product_id == product.id,
             ProductRecord.action == RecordAction.START_INSPECT
-        ).first()
+        ).order_by(ProductRecord.created_at.desc()).first()
 
-        if not has_inspect and not has_start:
-            # 获取送检记录
-            send_inspect_record = db.query(ProductRecord).filter(
-                ProductRecord.product_id == product.id,
-                ProductRecord.action == RecordAction.SEND_INSPECT
-            ).first()
+        # 判断是否待检测：
+        # 1. 没有检测记录，且没有开始检测记录
+        # 2. 或者最近的送检在最近的检测之后（重新送检的情况）
+        is_pending = False
 
+        if not latest_inspect and not latest_start_inspect:
+            # 从未检测过
+            is_pending = True
+        elif latest_inspect:
+            # 有检测记录，检查是否在送检之后重新送检了
+            if latest_send_inspect.created_at > latest_inspect.created_at:
+                # 重新送检了，需要检查是否有新的开始检测记录
+                if not latest_start_inspect or latest_start_inspect.created_at < latest_send_inspect.created_at:
+                    is_pending = True
+        elif latest_start_inspect:
+            # 只有开始检测记录，检查是否在送检之后
+            if latest_send_inspect.created_at > latest_start_inspect.created_at:
+                is_pending = True
+
+        if is_pending:
             # 从记录数据中获取加工信息
             process_info = {}
-            if send_inspect_record and send_inspect_record.data:
+            if latest_send_inspect.data:
                 try:
-                    process_info = json.loads(send_inspect_record.data) if isinstance(send_inspect_record.data, str) else send_inspect_record.data
+                    process_info = json.loads(latest_send_inspect.data) if isinstance(latest_send_inspect.data, str) else latest_send_inspect.data
                 except:
                     process_info = {}
 
@@ -110,6 +136,7 @@ async def list_testing_products(
     """
     获取检测中的产品列表
     - 已开始检测但未完成
+    - 支持重新送检的产品（最近的开始检测在最近的送检之后，且没有更新的完成检测记录）
     """
     check_inspector_role(current_user)
 
@@ -120,19 +147,39 @@ async def list_testing_products(
 
     result = []
     for product in products:
-        # 检查是否有开始检测记录
-        start_inspect = db.query(ProductRecord).filter(
+        # 获取最近的送检记录
+        latest_send_inspect = db.query(ProductRecord).filter(
+            ProductRecord.product_id == product.id,
+            ProductRecord.action == RecordAction.SEND_INSPECT
+        ).order_by(ProductRecord.created_at.desc()).first()
+
+        if not latest_send_inspect:
+            continue
+
+        # 获取最近的开始检测记录
+        latest_start_inspect = db.query(ProductRecord).filter(
             ProductRecord.product_id == product.id,
             ProductRecord.action == RecordAction.START_INSPECT
-        ).first()
+        ).order_by(ProductRecord.created_at.desc()).first()
 
-        # 检查是否已完成检测
-        has_complete = db.query(ProductRecord).filter(
+        # 获取最近的完成检测记录
+        latest_inspect = db.query(ProductRecord).filter(
             ProductRecord.product_id == product.id,
             ProductRecord.action == RecordAction.INSPECT
-        ).first()
+        ).order_by(ProductRecord.created_at.desc()).first()
 
-        if start_inspect and not has_complete:
+        # 判断是否检测中：
+        # 1. 有开始检测记录，且在最近的送检之后
+        # 2. 没有完成检测记录，或完成检测记录在开始检测之前
+        is_testing = False
+
+        if latest_start_inspect and latest_start_inspect.created_at >= latest_send_inspect.created_at:
+            # 开始检测在送检之后
+            if not latest_inspect or latest_inspect.created_at < latest_start_inspect.created_at:
+                # 没有完成检测，或者完成检测在开始检测之前
+                is_testing = True
+
+        if is_testing:
             result.append({
                 "id": product.id,
                 "trace_code": product.trace_code,
@@ -140,7 +187,7 @@ async def list_testing_products(
                 "quantity": product.quantity,
                 "unit": product.unit,
                 "status": "testing",
-                "start_time": start_inspect.created_at.isoformat() if start_inspect.created_at else None
+                "start_time": latest_start_inspect.created_at.isoformat() if latest_start_inspect.created_at else None
             })
 
     return result
@@ -213,14 +260,23 @@ async def start_inspect(
     if product.current_stage != ProductStage.INSPECTOR:
         raise HTTPException(status_code=400, detail="产品不在质检阶段")
 
-    # 3. 检查是否已经检测
-    existing_inspect = db.query(ProductRecord).filter(
+    # 3. 检查是否已经检测（需要考虑重新送检的情况）
+    # 获取最新的送检记录
+    latest_send_inspect = db.query(ProductRecord).filter(
+        ProductRecord.product_id == product_id,
+        ProductRecord.action == RecordAction.SEND_INSPECT
+    ).order_by(ProductRecord.created_at.desc()).first()
+
+    # 获取最新的检测记录
+    latest_inspect = db.query(ProductRecord).filter(
         ProductRecord.product_id == product_id,
         ProductRecord.action == RecordAction.INSPECT
-    ).first()
+    ).order_by(ProductRecord.created_at.desc()).first()
 
-    if existing_inspect:
-        raise HTTPException(status_code=400, detail="该产品已完成检测")
+    # 如果有检测记录，且在最新送检之后，说明已完成本轮检测
+    if latest_inspect and latest_send_inspect:
+        if latest_inspect.created_at > latest_send_inspect.created_at:
+            raise HTTPException(status_code=400, detail="该产品已完成检测")
 
     # 4. 创建开始检测记录（不上链）
     record = ProductRecord(
@@ -270,14 +326,23 @@ async def inspect_product(
     if product.current_stage != ProductStage.INSPECTOR:
         raise HTTPException(status_code=400, detail="产品不在质检阶段")
 
-    # 3. 检查是否已经检测
-    existing_inspect = db.query(ProductRecord).filter(
+    # 3. 检查是否已经检测（需要考虑重新送检的情况）
+    # 获取最新的送检记录
+    latest_send_inspect = db.query(ProductRecord).filter(
+        ProductRecord.product_id == product_id,
+        ProductRecord.action == RecordAction.SEND_INSPECT
+    ).order_by(ProductRecord.created_at.desc()).first()
+
+    # 获取最新的检测记录
+    latest_inspect = db.query(ProductRecord).filter(
         ProductRecord.product_id == product_id,
         ProductRecord.action == RecordAction.INSPECT
-    ).first()
+    ).order_by(ProductRecord.created_at.desc()).first()
 
-    if existing_inspect:
-        raise HTTPException(status_code=400, detail="该产品已完成检测")
+    # 如果有检测记录，且在最新送检之后，说明已完成本轮检测
+    if latest_inspect and latest_send_inspect:
+        if latest_inspect.created_at > latest_send_inspect.created_at:
+            raise HTTPException(status_code=400, detail="该产品已完成检测")
 
     # 4. 准备链上数据
     chain_data = {
@@ -304,14 +369,16 @@ async def inspect_product(
     if not success:
         raise HTTPException(status_code=500, detail="区块链上链失败")
 
-    # 6. 如果合格，准备转移到销售商；如果不合格，标记问题
+    # 6. 根据检测结果处理产品
+    action_result = None  # 记录处理结果类型
+    reject_to_stage_result = None  # 记录退回阶段
+
     if inspect_data.qualified:
-        # 查找销售商
+        # ========== 合格：转移到销售商 ==========
         seller = db.query(User).filter(User.role == UserRole.SELLER).first()
         if not seller:
             raise HTTPException(status_code=500, detail="系统中没有销售商，无法转移产品")
 
-        # 准备转移数据
         transfer_data = {
             "from_stage": "inspector",
             "to_stage": "seller",
@@ -319,32 +386,136 @@ async def inspect_product(
             "inspect_result": inspect_data.inspect_result
         }
 
-        # 转移产品到销售商
         transfer_success, transfer_tx_hash, transfer_block = blockchain_client.transfer_product(
             trace_code=product.trace_code,
             new_holder=seller.blockchain_address or seller.username,
             new_stage="seller",
             data=json.dumps(transfer_data, ensure_ascii=False),
-            remark=f"质检员转移产品",
+            remark="质检员转移产品",
             operator_name=current_user.real_name or current_user.username
         )
 
         if not transfer_success:
             raise HTTPException(status_code=500, detail="转移产品到销售阶段失败")
 
-        # 更新产品状态
         product.current_stage = ProductStage.SELLER
         product.current_holder_id = seller.id
         product.tx_hash = transfer_tx_hash
         product.block_number = transfer_block
-
-        # 保存转移记录的tx_hash
         final_tx_hash = transfer_tx_hash
         final_block_number = transfer_block
+
+    elif inspect_data.unqualified_action == "invalidate":
+        # ========== 不合格 - 作废产品 ==========
+        action_result = "invalidate"
+
+        # 更新链上数据，添加作废信息
+        chain_data["unqualified_action"] = "invalidate"
+        chain_data["invalidate_reason"] = inspect_data.reject_reason
+
+        # 记录作废操作到链上
+        invalidate_success, invalidate_tx_hash, invalidate_block = blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=2,  # INSPECTOR
+            action=6,  # TERMINATE (用于作废)
+            data=json.dumps({
+                "action": "invalidate",
+                "reason": inspect_data.reject_reason,
+                "inspector": current_user.real_name or current_user.username,
+                "timestamp": datetime.now().isoformat()
+            }, ensure_ascii=False),
+            remark=f"产品作废: {inspect_data.reject_reason}",
+            operator_name=current_user.real_name or current_user.username
+        )
+
+        if not invalidate_success:
+            raise HTTPException(status_code=500, detail="作废记录上链失败")
+
+        # 更新产品状态为已作废
+        product.status = ProductStatus.INVALIDATED
+        product.invalidated_at = datetime.now()
+        product.invalidated_by = current_user.id
+        product.invalidated_reason = inspect_data.reject_reason
+        product.tx_hash = invalidate_tx_hash
+        product.block_number = invalidate_block
+        final_tx_hash = invalidate_tx_hash
+        final_block_number = invalidate_block
+
     else:
-        # 不合格，保持在质检阶段
-        final_tx_hash = tx_hash
-        final_block_number = block_number
+        # ========== 不合格 - 退回 ==========
+        action_result = "reject"
+        reject_to_stage_result = inspect_data.reject_to_stage
+
+        # 确定退回的阶段和持有者
+        if inspect_data.reject_to_stage == "producer":
+            # 退回原料商
+            target_stage = ProductStage.PRODUCER
+            # 查找原创建者
+            target_holder = db.query(User).filter(User.id == product.creator_id).first()
+            stage_label = "原料商"
+        else:
+            # 退回加工商
+            target_stage = ProductStage.PROCESSOR
+            # 查找最近的加工记录获取加工商
+            process_record = db.query(ProductRecord).filter(
+                ProductRecord.product_id == product.id,
+                ProductRecord.action == RecordAction.PROCESS
+            ).order_by(ProductRecord.created_at.desc()).first()
+
+            if process_record and process_record.operator_id:
+                target_holder = db.query(User).filter(User.id == process_record.operator_id).first()
+            else:
+                # 找不到加工商，默认找一个加工商
+                target_holder = db.query(User).filter(User.role == UserRole.PROCESSOR).first()
+            stage_label = "加工商"
+
+        if not target_holder:
+            raise HTTPException(status_code=500, detail=f"找不到{stage_label}，无法退回")
+
+        # 记录退回操作到链上
+        reject_data = {
+            "action": "reject",
+            "from_stage": "inspector",
+            "to_stage": inspect_data.reject_to_stage,
+            "reason": inspect_data.reject_reason,
+            "issues": inspect_data.issues,
+            "inspector": current_user.real_name or current_user.username,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        reject_success, reject_tx_hash, reject_block = blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=2,  # INSPECTOR
+            action=5,  # REJECT
+            data=json.dumps(reject_data, ensure_ascii=False),
+            remark=f"退回{stage_label}: {inspect_data.reject_reason}",
+            operator_name=current_user.real_name or current_user.username
+        )
+
+        if not reject_success:
+            raise HTTPException(status_code=500, detail="退回记录上链失败")
+
+        # 更新产品状态
+        product.current_stage = target_stage
+        product.current_holder_id = target_holder.id
+        product.tx_hash = reject_tx_hash
+        product.block_number = reject_block
+        final_tx_hash = reject_tx_hash
+        final_block_number = reject_block
+
+        # 创建退回记录
+        reject_record = ProductRecord(
+            product_id=product.id,
+            stage=ProductStage.INSPECTOR,
+            action=RecordAction.REJECT,
+            data=json.dumps(reject_data, ensure_ascii=False),
+            remark=f"退回{stage_label}: {inspect_data.reject_reason}",
+            operator_id=current_user.id,
+            operator_name=current_user.real_name or current_user.username,
+            tx_hash=reject_tx_hash,
+            block_number=reject_block
+        )
+        db.add(reject_record)
 
     product.updated_at = datetime.now()
 
@@ -357,8 +528,8 @@ async def inspect_product(
         remark=f"质检: {'合格' if inspect_data.qualified else '不合格'} - {inspect_data.quality_grade}级",
         operator_id=current_user.id,
         operator_name=current_user.real_name or current_user.username,
-        tx_hash=final_tx_hash,
-        block_number=final_block_number
+        tx_hash=tx_hash,  # 检测记录使用检测时的tx_hash
+        block_number=block_number
     )
     db.add(record)
     db.commit()
@@ -368,6 +539,8 @@ async def inspect_product(
         "message": "检测完成",
         "product_id": product.id,
         "qualified": inspect_data.qualified,
+        "action": action_result,
+        "reject_to_stage": reject_to_stage_result,
         "trace_code": product.trace_code,
         "tx_hash": final_tx_hash,
         "block_number": final_block_number
