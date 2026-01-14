@@ -71,17 +71,36 @@ class FiscoBcosClient:
             return {"error": str(e)}
 
     def get_block_number(self) -> int:
-        """获取当前区块高度 (使用 RPC)"""
-        result = self._rpc_call("getBlockNumber", [self.group_id])
-        if "result" in result:
-            res = result["result"]
-            return int(res, 16) if isinstance(res, str) and res.startswith("0x") else int(res)
+        """获取当前区块高度 (使用 Console)"""
+        success, stdout, stderr = self._run_console_command("getBlockNumber")
+        if success and stdout:
+            # Console 输出格式: 数字
+            for line in stdout.strip().split("\n"):
+                line = line.strip()
+                if line.isdigit():
+                    return int(line)
         return 0
 
     def get_transaction_receipt(self, tx_hash: str) -> Optional[Dict]:
-        """获取交易回执 (使用 RPC)"""
-        result = self._rpc_call("getTransactionReceipt", [self.group_id, tx_hash, True])
-        return result.get("result")
+        """获取交易回执 (使用 Console)"""
+        success, stdout, stderr = self._run_console_command(f"getTransactionReceipt {tx_hash}")
+        if success and stdout:
+            return self._parse_console_json_output(stdout)
+        return None
+
+    def get_transaction_by_hash(self, tx_hash: str) -> Optional[Dict]:
+        """通过交易哈希获取交易详情 (使用 Console)"""
+        success, stdout, stderr = self._run_console_command(f"getTransactionByHash {tx_hash}")
+        if success and stdout:
+            return self._parse_console_json_output(stdout)
+        return None
+
+    def get_block_by_number(self, block_number: int) -> Optional[Dict]:
+        """通过区块号获取区块详情 (使用 Console)"""
+        success, stdout, stderr = self._run_console_command(f"getBlockByNumber {block_number}")
+        if success and stdout:
+            return self._parse_console_json_output(stdout)
+        return None
 
     def _run_console_command(self, command: str) -> Tuple[bool, str, str]:
         """执行 Console 命令"""
@@ -99,6 +118,91 @@ class FiscoBcosClient:
             return False, "", "Command timeout"
         except Exception as e:
             return False, "", str(e)
+
+    def _parse_console_json_output(self, output: str) -> Optional[Dict]:
+        """解析 Console 输出的 JSON 格式数据"""
+        import re
+        try:
+            output = output.strip()
+
+            # 查找 JSON 对象的开始
+            if output.startswith("{"):
+                try:
+                    return json.loads(output)
+                except:
+                    pass
+
+            # 解析 Java 风格的输出
+            result = {}
+
+            # 提取关键字段
+            if "hash=" in output or "hash'" in output:
+                match = re.search(r"hash='([^']+)'", output)
+                if match:
+                    result["hash"] = match.group(1)
+
+            if "from=" in output:
+                match = re.search(r"from='([^']*)'", output)
+                if match:
+                    result["from"] = match.group(1)
+
+            if "to=" in output:
+                match = re.search(r"to='([^']*)'", output)
+                if match:
+                    result["to"] = match.group(1)
+
+            if "blockNumber=" in output:
+                match = re.search(r"blockNumber=(\d+)", output)
+                if match:
+                    result["blockNumber"] = int(match.group(1))
+
+            # 区块的 number 字段 (带引号)
+            if "number=" in output:
+                match = re.search(r"number='(\d+)'", output)
+                if match:
+                    result["number"] = int(match.group(1))
+
+            if "timestamp=" in output:
+                # 支持 timestamp='1766920466216' 或 timestamp=1766920466216 格式
+                match = re.search(r"timestamp='?(\d+)'?", output)
+                if match:
+                    result["timestamp"] = int(match.group(1))
+
+            if "sealer=" in output:
+                match = re.search(r"sealer='([^']*)'", output)
+                if match:
+                    result["sealer"] = match.group(1)
+
+            if "parentHash=" in output:
+                match = re.search(r"parentHash='([^']*)'", output)
+                if match:
+                    result["parentHash"] = match.group(1)
+
+            # 提取交易列表
+            if "transactions=" in output:
+                # 统计 JsonTransactionResponse 的数量
+                tx_matches = re.findall(r"JsonTransactionResponse\{", output)
+                result["transactions"] = ["tx"] * len(tx_matches) if tx_matches else []
+
+            if "input=" in output:
+                match = re.search(r"input='([^']*)'", output)
+                if match:
+                    result["input"] = match.group(1)
+
+            if "status=" in output:
+                match = re.search(r"status=(\d+)", output)
+                if match:
+                    result["status"] = int(match.group(1))
+
+            if "gasUsed=" in output:
+                match = re.search(r"gasUsed='?(\d+)'?", output)
+                if match:
+                    result["gasUsed"] = match.group(1)
+
+            return result if result else None
+        except Exception as e:
+            print(f"Parse console output error: {e}")
+            return None
 
     def _parse_console_output(self, output: str) -> Dict[str, Any]:
         """解析 Console 输出"""
@@ -221,8 +325,16 @@ class FiscoBcosClient:
         return result[0] if result else False
 
     def get_product_count(self) -> int:
-        result = self._call_contract_rpc("getProductCount()", [], [], ["uint256"])
-        return result[0] if result else 0
+        """获取链上产品总数 (使用 Console)"""
+        import re
+        command = f'call AgriTrace {self.contract_address} getProductCount'
+        success, stdout, stderr = self._run_console_command(command)
+        if success and stdout:
+            # 解析 Return values:(27) 格式
+            match = re.search(r'Return values:\((\d+)\)', stdout)
+            if match:
+                return int(match.group(1))
+        return 0
 
     def is_connected(self) -> bool:
         return self.get_block_number() >= 0
