@@ -117,7 +117,7 @@ const onStockConfirm = async () => {
     })
 
     if (result) {
-      chainConfirmRef.value?.setSuccess(result.txHash, result.blockNumber)
+      chainConfirmRef.value?.setSuccess(currentChain.value.traceCode, result.blockNumber, result.txHash)
       ElMessage.success('入库成功，可生成二维码供消费者扫码溯源')
     } else {
       chainConfirmRef.value?.setError('入库失败，请重试')

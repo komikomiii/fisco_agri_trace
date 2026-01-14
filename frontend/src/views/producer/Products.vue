@@ -109,8 +109,37 @@ const startPolling = (productId = null) => {
     
     // 如果正在显示同步中的弹窗，检查是否已完成
     if (pollingForId.value) {
+      const product = products.value.find(p => p.id === pollingForId.value)
+      if (product && product.status === 'ON_CHAIN') {
+        // 通知 ChainConfirm 成功
+        if (chainConfirmVisible.value) {
+          chainConfirmRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        if (amendChainConfirmVisible.value) {
+          amendChainConfirmRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        if (resubmitConfirmVisible.value) {
+          resubmitConfirmRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        pollingForId.value = null
+      }
+    }
 
-// 监听 Tab 切换（不需要重新加载，只需前端过滤）
+    // 检查是否还有 PENDING_CHAIN 状态
+    const hasPending = products.value.some(p => p.status === 'PENDING_CHAIN')
+    if (!hasPending && !pollingForId.value) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+const stopPolling = () => {
+  if (pollTimer.value) {
+    clearInterval(pollTimer.value)
+    pollTimer.value = null
+  }
+}
+
 const handleTabChange = () => {
   // 数据已在内存中，无需重新请求
 }
@@ -501,7 +530,7 @@ const onChainConfirm = async () => {
     } else {
       const result = await productStore.confirmOnChain(pendingChainData.value.chainId)
       if (result) {
-        chainConfirmRef.value?.setSuccess(result.records[0].txHash, result.records[0].blockNumber)
+        chainConfirmRef.value?.setSuccess(result.traceCode, result.records[0].blockNumber, result.records[0].txHash)
         ElMessage.success('上链成功！溯源码：' + result.traceCode)
       } else {
         chainConfirmRef.value?.setError('上链失败，请重试')
@@ -662,7 +691,7 @@ const onAmendChainConfirm = async () => {
       },
       amendData.reason
     )
-    amendChainConfirmRef.value?.setSuccess('修正记录已提交')
+    amendChainConfirmRef.value?.setSuccess(amendingChain.value.trace_code || amendingChain.value.traceCode, '修正记录已提交')
   } catch (error) {
     amendChainConfirmRef.value?.setError('修正记录上链失败')
   }
