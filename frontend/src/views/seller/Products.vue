@@ -290,7 +290,7 @@ const getStatusTag = (product) => {
   if (!product.warehouse || product.warehouse === '未入库') {
     return { type: 'warning', text: '待入库' }
   }
-  return { type: 'success', text: '已上架' }
+  return { type: 'success', text: '已入库' }
 }
 
 // ==================== 数据加载 ====================

@@ -59,9 +59,15 @@ async def list_inventory_products(
     check_seller_role(current_user)
 
     # 查询当前在销售阶段且由当前销售商持有的产品
+    # 排除已经有销售/上架记录的产品
+    subquery = db.query(ProductRecord.product_id).filter(
+        ProductRecord.action == RecordAction.SELL
+    ).subquery()
+
     products = db.query(Product).filter(
         Product.current_stage == ProductStage.SELLER,
-        Product.current_holder_id == current_user.id
+        Product.current_holder_id == current_user.id,
+        ~Product.id.in_(subquery)
     ).all()
 
     result = []
@@ -344,10 +350,15 @@ async def get_statistics(
     """
     check_seller_role(current_user)
 
-    # 库存产品数量
+    # 库存产品数量 (排除已上架/销售的产品)
+    subquery = db.query(ProductRecord.product_id).filter(
+        ProductRecord.action == RecordAction.SELL
+    ).subquery()
+
     inventory_count = db.query(Product).filter(
         Product.current_stage == ProductStage.SELLER,
-        Product.current_holder_id == current_user.id
+        Product.current_holder_id == current_user.id,
+        ~Product.id.in_(subquery)
     ).count()
 
     # 已售出产品数量（销售记录数）
