@@ -48,7 +48,10 @@ const currentList = computed(() => {
 // 状态映射
 const statusMap = {
   pending: { label: '待接收', type: 'warning' },
-  received: { label: '已接收', type: 'success' }
+  received: { label: '已接收', type: 'success' },
+  ON_CHAIN: { label: '已上链', type: 'success' },
+  PENDING_CHAIN: { label: '正在接收...', type: 'info', icon: 'Loading' },
+  CHAIN_FAILED: { label: '接收失败', type: 'danger' }
 }
 
 // ==================== 接收确认（上链） ====================
@@ -87,13 +90,50 @@ const openReceiveDialog = (product) => {
   chainConfirmVisible.value = true
 }
 
+// 轮询定时器
+const pollTimer = ref(null)
+const pollingForId = ref(null)
+
+// 开启轮询
+const startPolling = (productId = null) => {
+  if (productId) pollingForId.value = productId
+  if (pollTimer.value) return
+  pollTimer.value = setInterval(async () => {
+    await fetchAvailableProducts(false)
+    await fetchReceivedProducts(false)
+
+    if (pollingForId.value) {
+      // 在已接收列表中找
+      const product = receivedProductsData.value.find(p => p.id === pollingForId.value)
+      if (product && product.status === 'ON_CHAIN') {
+        if (chainConfirmVisible.value && pendingReceive.value?.product?.id === product.id) {
+          chainConfirmRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        pollingForId.value = null
+      }
+    }
+
+    const hasPending = [...availableProducts.value, ...receivedProductsData.value].some(p => p.status === 'PENDING_CHAIN')
+    if (!hasPending && !pollingForId.value) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+// 停止轮询
+const stopPolling = () => {
+  if (pollTimer.value) {
+    clearInterval(pollTimer.value)
+    pollTimer.value = null
+  }
+}
+
 const onReceiveConfirm = async () => {
   if (!pendingReceive.value) return
 
   chainConfirmRef.value?.setLoading()
 
   try {
-    // 调用后端 API 接收原料
     const result = await processorApi.receiveProduct(
       pendingReceive.value.product.id,
       {
@@ -104,41 +144,39 @@ const onReceiveConfirm = async () => {
       }
     )
 
-    chainConfirmRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
-
-    ElMessage.success('接收成功，产品已进入加工环节')
-
-    // 刷新列表
-    await fetchAvailableProducts()
-    await fetchReceivedProducts()
+    ElMessage.success('接收请求已提交，请等待区块确认...')
+    
+    fetchAvailableProducts()
+    fetchReceivedProducts()
+    startPolling(pendingReceive.value.product.id)
   } catch (error) {
     chainConfirmRef.value?.setError(error.response?.data?.detail || '接收失败')
   }
 }
 
 // 获取可接收的产品列表
-const fetchAvailableProducts = async () => {
+const fetchAvailableProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getAvailableProducts()
     availableProducts.value = data
   } catch (error) {
     ElMessage.error('获取可接收产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
 // 获取已接收的产品列表
-const fetchReceivedProducts = async () => {
+const fetchReceivedProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getReceivedProducts()
     receivedProductsData.value = data
   } catch (error) {
     ElMessage.error('获取已接收产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
@@ -258,9 +296,12 @@ const getActionLabel = (action) => {
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default>
-            <el-tag type="success">已上链</el-tag>
+        <el-table-column label="状态" width="120" align="center">
+          <template #default="{ row }">
+            <el-tag :type="statusMap[row.status]?.type || 'success'">
+              <el-icon v-if="row.status === 'PENDING_CHAIN'" class="is-loading"><Loading /></el-icon>
+              {{ statusMap[row.status]?.label || '已上链' }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">

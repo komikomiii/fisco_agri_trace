@@ -1,7 +1,7 @@
 """
 Processor (加工商) API
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from pydantic import BaseModel
@@ -88,10 +88,9 @@ async def list_available_products(
     """
     check_processor_role(current_user)
 
-    # 查询所有已上链且在原料商阶段的产品
-    # 只显示: 公共池产品 或 指定给当前加工商的产品
+    # 查询所有已上链（或正在同步中）且在原料商阶段的产品
     products = db.query(Product).filter(
-        Product.status == ProductStatus.ON_CHAIN,
+        Product.status.in_([ProductStatus.ON_CHAIN, ProductStatus.PENDING_CHAIN]),
         Product.current_stage == ProductStage.PRODUCER,
         or_(
             Product.distribution_type == "pool",
@@ -163,25 +162,67 @@ async def list_received_products(
     return result
 
 
+def background_receive_product(product_id: int, user_id: int, user_address: str, operator_name: str, chain_data_str: str, quality: str):
+    """后台处理原料接收"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return
+
+        success, tx_hash, block_number = blockchain_client.transfer_product(
+            trace_code=product.trace_code,
+            new_holder=user_address,
+            new_stage="processor",
+            data=chain_data_str,
+            remark=f"接收质检等级: {quality}",
+            operator_name=operator_name
+        )
+
+        if success:
+            product.current_holder_id = user_id
+            product.current_stage = ProductStage.PROCESSOR
+            product.status = ProductStatus.ON_CHAIN
+            product.tx_hash = tx_hash
+            product.block_number = block_number
+            product.updated_at = datetime.now()
+
+            record = ProductRecord(
+                product_id=product.id,
+                stage=ProductStage.PROCESSOR,
+                action=RecordAction.RECEIVE,
+                data=chain_data_str,
+                remark=f"接收原料",
+                operator_id=user_id,
+                operator_name=operator_name,
+                tx_hash=tx_hash,
+                block_number=block_number
+            )
+            db.add(record)
+            db.commit()
+        else:
+            product.status = ProductStatus.CHAIN_FAILED
+            db.commit()
+            print(f"❌ Background receive failed for product {product_id}")
+    except Exception as e:
+        print(f"❌ Background receive error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @router.post("/products/{product_id}/receive")
 async def receive_product(
     product_id: int,
     receive_data: ReceiveRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    接收原料并上链
-
-    流程:
-    1. 验证产品存在且在正确阶段
-    2. 调用智能合约 transferProduct 转移到加工商阶段
-    3. 更新数据库中的 current_holder 和 current_stage
-    4. 记录接收记录
-    """
+    """接收原料 (异步)"""
     check_processor_role(current_user)
 
-    # 1. 查询产品
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="产品不存在")
@@ -190,401 +231,195 @@ async def receive_product(
         raise HTTPException(status_code=400, detail="产品未上链，无法接收")
 
     if product.current_stage != ProductStage.PRODUCER:
-        raise HTTPException(status_code=400, detail=f"产品不在原料商阶段，当前阶段: {product.current_stage.value}")
+        raise HTTPException(status_code=400, detail="产品不在原料商阶段")
 
-    # 2. 确保用户有区块链地址
+    # 预先确保地址
     if not current_user.blockchain_address:
         from app.blockchain.wallet import wallet_manager
         account = wallet_manager.ensure_user_account(current_user.id, current_user.username)
         current_user.blockchain_address = account["address"]
         db.commit()
 
-    # 3. 准备上链数据
-    chain_data = {
+    chain_data_str = json.dumps({
         "received_quantity": receive_data.received_quantity,
         "quality": receive_data.quality,
         "notes": receive_data.notes,
         "received_at": datetime.now().isoformat()
-    }
+    }, default=str, ensure_ascii=False)
 
-    # 4. 调用智能合约转移产品到加工商（使用线程池避免阻塞）
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.transfer_product(
-            trace_code=product.trace_code,
-            new_holder=current_user.blockchain_address,
-            new_stage="processor",  # PROCESSOR
-            data=json.dumps(chain_data, default=str, ensure_ascii=False),
-            remark=f"接收质检等级: {receive_data.quality}",
-            operator_name=current_user.real_name or current_user.username
-        )
-    )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链上链失败")
-
-    # 4. 更新数据库
-    product.current_holder_id = current_user.id
-    product.current_stage = ProductStage.PROCESSOR
-    product.tx_hash = tx_hash
-    product.block_number = block_number
-    product.updated_at = datetime.now()
-
-    # 5. 创建接收记录
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.PROCESSOR,
-        action=RecordAction.RECEIVE,
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"接收原料",
-        operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
+    # 设置状态为正在处理
+    product.status = ProductStatus.PENDING_CHAIN
     db.commit()
-    db.refresh(record)
 
-    return {
-        "message": "原料接收成功",
-        "product_id": product.id,
-        "trace_code": product.trace_code,
-        "tx_hash": tx_hash,
-        "block_number": block_number,
-        "record_id": record.id
-    }
+    # 提交异步任务
+    background_tasks.add_task(
+        background_receive_product,
+        product.id,
+        current_user.id,
+        current_user.blockchain_address,
+        current_user.real_name or current_user.username,
+        chain_data_str,
+        receive_data.quality
+    )
 
+    return {"message": "接收请求已提交"}
+
+
+def background_process_product(product_id: int, user_id: int, operator_name: str, chain_data_str: str, result_product: str, result_quantity: float, auto_send: bool):
+    """后台处理加工"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product: return
+
+        success, tx_hash, block_number = blockchain_client.add_record(
+            trace_code=product.trace_code,
+            stage=1, action=1, data=chain_data_str,
+            remark=f"加工: {result_product}",
+            operator_name=operator_name
+        )
+
+        if success:
+            product.name = result_product
+            product.quantity = result_quantity
+            product.status = ProductStatus.ON_CHAIN
+            product.tx_hash = tx_hash
+            product.block_number = block_number
+            product.updated_at = datetime.now()
+
+            record = ProductRecord(
+                product_id=product.id, stage=ProductStage.PROCESSOR, action=RecordAction.PROCESS,
+                data=chain_data_str, remark=f"加工完成: {result_product}",
+                operator_id=user_id, operator_name=operator_name,
+                tx_hash=tx_hash, block_number=block_number
+            )
+            db.add(record)
+            db.commit()
+
+            if auto_send:
+                background_send_inspect(product.id, user_id, operator_name, db)
+        else:
+            product.status = ProductStatus.CHAIN_FAILED
+            db.commit()
+    except Exception as e:
+        print(f"❌ Background process error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+def background_send_inspect(product_id: int, user_id: int, operator_name: str, db: Session = None):
+    """后台处理送检逻辑"""
+    is_internal_session = False
+    if db is None:
+        from app.database import SessionLocal
+        db = SessionLocal()
+        is_internal_session = True
+        
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        inspector = db.query(User).filter(User.role == UserRole.INSPECTOR).first()
+        if not product or not inspector: 
+            if is_internal_session: db.close()
+            return
+
+        send_data = {"inspection_type": "quality", "send_date": datetime.now().isoformat()}
+        s_success, s_tx, s_bn = blockchain_client.add_record(
+            trace_code=product.trace_code, stage=1, action=2, 
+            data=json.dumps(send_data), remark="送检: 质量检测", operator_name=operator_name
+        )
+
+        if s_success:
+            t_success, t_tx, t_bn = blockchain_client.transfer_product(
+                trace_code=product.trace_code, 
+                new_holder=inspector.blockchain_address or inspector.username,
+                new_stage="inspector", data=json.dumps({"action": "send_inspect"}),
+                remark="加工商送检", operator_name=operator_name
+            )
+            if t_success:
+                product.current_stage = ProductStage.INSPECTOR
+                product.current_holder_id = inspector.id
+                product.status = ProductStatus.ON_CHAIN
+                product.tx_hash = t_tx
+                product.block_number = t_bn
+                db.add(ProductRecord(
+                    product_id=product.id, stage=ProductStage.PROCESSOR, action=RecordAction.SEND_INSPECT,
+                    data=json.dumps(send_data), remark="送检: 质量检测",
+                    operator_id=user_id, operator_name=operator_name, tx_hash=t_tx, block_number=t_bn
+                ))
+                db.commit()
+            else:
+                product.status = ProductStatus.CHAIN_FAILED
+                db.commit()
+        else:
+            product.status = ProductStatus.CHAIN_FAILED
+            db.commit()
+    except Exception as e:
+        print(f"❌ Background send inspect error: {e}")
+        db.rollback()
+    finally:
+        if is_internal_session:
+            db.close()
 
 @router.post("/products/{product_id}/process")
 async def process_product(
     product_id: int,
     process_data: ProcessRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    加工处理并上链
-
-    流程:
-    1. 验证产品在加工商阶段且由当前用户持有
-    2. 调用智能合约添加加工记录
-    3. 更新数据库中的产品信息
-    """
+    """加工处理 (异步)"""
     check_processor_role(current_user)
-
-    # 1. 查询产品
     product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="产品不存在")
+    if not product: raise HTTPException(status_code=404, detail="产品不存在")
+    if product.current_stage != ProductStage.PROCESSOR: raise HTTPException(status_code=400, detail="产品不在加工商阶段")
+    if product.current_holder_id != current_user.id: raise HTTPException(status_code=403, detail="非当前持有者")
 
-    if product.current_stage != ProductStage.PROCESSOR:
-        raise HTTPException(status_code=400, detail="产品不在加工商阶段")
-
-    if product.current_holder_id != current_user.id:
-        raise HTTPException(status_code=403, detail="您不是该产品的当前持有者")
-
-    # 2. 准备上链数据
-    chain_data = {
+    chain_data_str = json.dumps({
         "process_type": process_data.process_type,
         "result_product": process_data.result_product,
         "result_quantity": process_data.result_quantity,
         "process_date": process_data.process_date.isoformat() if process_data.process_date else datetime.now().isoformat(),
         "notes": process_data.notes
-    }
+    }, default=str, ensure_ascii=False)
 
-    # 3. 调用智能合约添加加工记录（使用线程池避免阻塞）
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=1,  # ProductStage.PROCESSOR
-            action=1,  # RecordAction.PROCESS
-            data=json.dumps(chain_data, default=str, ensure_ascii=False),
-            remark=f"加工: {process_data.process_type} → {process_data.result_product}",
-            operator_name=current_user.real_name or current_user.username
-        )
-    )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链上链失败")
-
-    # 4. 更新产品信息 (加工后的信息)
-    product.name = process_data.result_product
-    product.quantity = process_data.result_quantity
-    product.tx_hash = tx_hash
-    product.block_number = block_number
-    product.updated_at = datetime.now()
-
-    # 5. 创建加工记录
-    process_type_label = PROCESS_TYPE_LABELS.get(process_data.process_type, process_data.process_type)
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.PROCESSOR,
-        action=RecordAction.PROCESS,
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"加工: {process_type_label} → {process_data.result_product}",
-        operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-
-    # 6. 检查是否需要自动送检（重新加工的产品）
     auto_send = process_data.auto_send_inspect
     if auto_send is None:
-        # 如果没有明确指定，检查是否是被退回的产品（有REJECT记录）
-        has_reject_record = db.query(ProductRecord).filter(
-            ProductRecord.product_id == product.id,
-            ProductRecord.action == RecordAction.REJECT
-        ).first()
-        auto_send = has_reject_record is not None
+        has_reject = db.query(ProductRecord).filter(ProductRecord.product_id == product.id, ProductRecord.action == RecordAction.REJECT).first()
+        auto_send = has_reject is not None
 
-    send_inspect_result = None
-    if auto_send:
-        # 自动执行送检流程
-        try:
-            # 准备送检数据
-            send_chain_data = {
-                "inspection_type": "quality",
-                "send_date": datetime.now().isoformat(),
-                "notes": "重新加工完成，自动送检"
-            }
-
-            # 调用智能合约添加送检记录（使用线程池避免阻塞）
-            send_success, send_tx_hash, send_block_number = await loop.run_in_executor(
-                blockchain_executor,
-                lambda: blockchain_client.add_record(
-                    trace_code=product.trace_code,
-                    stage=1,  # ProductStage.PROCESSOR
-                    action=2,  # RecordAction.SEND_INSPECT
-                    data=json.dumps(send_chain_data, default=str, ensure_ascii=False),
-                    remark="送检: 质量检测",
-                    operator_name=current_user.real_name or current_user.username
-                )
-            )
-
-            if send_success:
-                # 查找质检员
-                inspector = db.query(User).filter(User.role == UserRole.INSPECTOR).first()
-                if inspector:
-                    # 转移产品到质检阶段
-                    transfer_data = {
-                        "action": "send_inspect",
-                        "from_processor": current_user.username,
-                        "to_inspector": inspector.username
-                    }
-
-                    transfer_success, transfer_tx_hash, transfer_block = await loop.run_in_executor(
-                        blockchain_executor,
-                        lambda: blockchain_client.transfer_product(
-                            trace_code=product.trace_code,
-                            new_holder=inspector.blockchain_address or inspector.username,
-                            new_stage="inspector",
-                            data=json.dumps(transfer_data, ensure_ascii=False),
-                            remark="加工商送检",
-                            operator_name=current_user.real_name or current_user.username
-                        )
-                    )
-
-                    if transfer_success:
-                        # 更新产品状态
-                        product.current_stage = ProductStage.INSPECTOR
-                        product.current_holder_id = inspector.id
-                        product.tx_hash = transfer_tx_hash
-                        product.block_number = transfer_block
-                        product.updated_at = datetime.now()
-
-                        # 创建送检记录
-                        send_record = ProductRecord(
-                            product_id=product.id,
-                            stage=ProductStage.PROCESSOR,
-                            action=RecordAction.SEND_INSPECT,
-                            data=json.dumps(send_chain_data, default=str, ensure_ascii=False),
-                            remark="送检: 质量检测",
-                            operator_id=current_user.id,
-                            operator_name=current_user.real_name or current_user.username,
-                            tx_hash=send_tx_hash,
-                            block_number=send_block_number
-                        )
-                        db.add(send_record)
-                        db.commit()
-
-                        send_inspect_result = {
-                            "success": True,
-                            "tx_hash": transfer_tx_hash,
-                            "block_number": transfer_block
-                        }
-        except Exception as e:
-            # 送检失败不影响加工结果，只是记录失败
-            send_inspect_result = {
-                "success": False,
-                "error": str(e)
-            }
-
-    result = {
-        "message": "加工处理成功",
-        "product_id": product.id,
-        "trace_code": product.trace_code,
-        "result_product": process_data.result_product,
-        "result_quantity": process_data.result_quantity,
-        "tx_hash": tx_hash,
-        "block_number": block_number,
-        "record_id": record.id
-    }
-
-    if send_inspect_result:
-        result["auto_send_inspect"] = send_inspect_result
-        if send_inspect_result.get("success"):
-            result["message"] = "加工处理成功，已自动送检"
-            result["tx_hash"] = send_inspect_result["tx_hash"]
-            result["block_number"] = send_inspect_result["block_number"]
-
-    return result
-
+    background_tasks.add_task(
+        background_process_product,
+        product.id, current_user.id, current_user.real_name or current_user.username,
+        chain_data_str, process_data.result_product, process_data.result_quantity, auto_send
+    )
+    product.status = ProductStatus.PENDING_CHAIN
+    db.commit()
+    return {"message": "加工处理请求已提交"}
 
 @router.post("/products/{product_id}/send-inspect")
 async def send_inspect_product(
     product_id: int,
     inspect_data: SendInspectRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    送检 - 将加工后的产品发送给质检员
-    1. 验证产品在加工商阶段且已加工
-    2. 调用智能合约添加送检记录
-    3. 更新产品状态为质检阶段
-    """
+    """手动送检 (异步)"""
     check_processor_role(current_user)
-
-    # 1. 查询产品
     product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="产品不存在")
+    if not product: raise HTTPException(status_code=404, detail="产品不存在")
+    if product.current_stage != ProductStage.PROCESSOR or product.current_holder_id != current_user.id:
+        raise HTTPException(status_code=400, detail="无权操作或阶段错误")
 
-    if product.current_stage != ProductStage.PROCESSOR:
-        raise HTTPException(status_code=400, detail="产品不在加工商阶段")
-
-    if product.current_holder_id != current_user.id:
-        raise HTTPException(status_code=403, detail="您不是该产品的当前持有者")
-
-    # 2. 检查是否已加工
-    has_process_record = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product.id,
-        ProductRecord.action == RecordAction.PROCESS
-    ).first()
-
-    if not has_process_record:
-        raise HTTPException(status_code=400, detail="产品尚未加工，无法送检")
-
-    # 3. 检查是否已送检（需要考虑重新加工的情况）
-    # 获取最新的送检记录
-    latest_send_inspect = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product.id,
-        ProductRecord.action == RecordAction.SEND_INSPECT
-    ).order_by(ProductRecord.created_at.desc()).first()
-
-    # 获取最新的加工记录
-    latest_process = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product.id,
-        ProductRecord.action == RecordAction.PROCESS
-    ).order_by(ProductRecord.created_at.desc()).first()
-
-    # 如果有送检记录，且最新加工在送检之前或没有新加工，则阻止重复送检
-    if latest_send_inspect:
-        if not latest_process or latest_process.created_at <= latest_send_inspect.created_at:
-            raise HTTPException(status_code=400, detail="产品已送检，请勿重复操作")
-
-    # 4. 准备上链数据
-    chain_data = {
-        "inspection_type": inspect_data.inspection_type,
-        "send_date": datetime.now().isoformat(),
-        "notes": inspect_data.notes or "加工完成，请求质检"
-    }
-
-    # 5. 调用智能合约添加送检记录（使用线程池避免阻塞）
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=1,  # ProductStage.PROCESSOR
-            action=2,  # RecordAction.SEND_INSPECT
-            data=json.dumps(chain_data, default=str, ensure_ascii=False),
-            remark=f"送检: {inspect_data.inspection_type}",
-            operator_name=current_user.real_name or current_user.username
-        )
+    background_tasks.add_task(
+        background_send_inspect,
+        product.id, current_user.id, current_user.real_name or current_user.username
     )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链上链失败")
-
-    # 6. 转移产品到质检阶段 (使用 transfer_product)
-    # 查找第一个质检员作为目标
-    inspector = db.query(User).filter(User.role == UserRole.INSPECTOR).first()
-    if not inspector:
-        raise HTTPException(status_code=500, detail="系统中没有质检员账号")
-
-    transfer_data = {
-        "action": "send_inspect",
-        "from_processor": current_user.username,
-        "to_inspector": inspector.username
-    }
-
-    transfer_success, transfer_tx_hash, transfer_block = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.transfer_product(
-            trace_code=product.trace_code,
-            new_holder=inspector.blockchain_address or inspector.username,
-            new_stage="inspector",
-            data=json.dumps(transfer_data, ensure_ascii=False),
-            remark=f"加工商送检",
-            operator_name=current_user.real_name or current_user.username
-        )
-    )
-
-    if not transfer_success:
-        raise HTTPException(status_code=500, detail="转移产品到质检阶段失败")
-
-    # 7. 更新产品状态
-    product.current_stage = ProductStage.INSPECTOR
-    product.current_holder_id = inspector.id
-    product.tx_hash = transfer_tx_hash
-    product.block_number = transfer_block
-    product.updated_at = datetime.now()
-
-    # 8. 创建送检记录
-    inspection_type_label = INSPECTION_TYPE_LABELS.get(inspect_data.inspection_type, inspect_data.inspection_type)
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.PROCESSOR,
-        action=RecordAction.SEND_INSPECT,
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"送检: {inspection_type_label}",
-        operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
-        tx_hash=transfer_tx_hash,
-        block_number=transfer_block
-    )
-    db.add(record)
+    product.status = ProductStatus.PENDING_CHAIN
     db.commit()
-    db.refresh(record)
-
-    return {
-        "message": "送检成功",
-        "product_id": product.id,
-        "trace_code": product.trace_code,
-        "inspector": inspector.username,
-        "tx_hash": transfer_tx_hash,
-        "block_number": transfer_block,
-        "record_id": record.id
-    }
+    return {"message": "送检请求已提交"}
 
 
 @router.get("/products/{product_id}/records")
@@ -678,7 +513,7 @@ async def list_pending_products(
                 "origin": p.origin,
                 "quantity": p.quantity,
                 "unit": p.unit,
-                "status": "pending"
+                "status": p.status if p.status == ProductStatus.PENDING_CHAIN else "pending"
             })
 
     return result
@@ -741,7 +576,7 @@ async def list_processing_products(
             "process_type": record_data.get("process_type", ""),
             "output_product": record_data.get("result_product", ""),
             "output_quantity": record_data.get("result_quantity", 0),
-            "status": "processing"
+            "status": p.status if p.status == ProductStatus.PENDING_CHAIN else "processing"
         })
 
     return result
@@ -806,7 +641,7 @@ async def list_sent_products(
                 "process_type": record_data.get("process_type", ""),
                 "output_product": record_data.get("result_product", ""),
                 "output_quantity": record_data.get("result_quantity", 0),
-                "status": "sent"
+                "status": p.status if p.status == ProductStatus.PENDING_CHAIN else "sent"
             })
 
     return result

@@ -46,7 +46,10 @@ const statusMap = {
   processing: { label: '加工中', type: 'primary' },
   sent: { label: '已送检', type: 'success' },
   rejected: { label: '被退回', type: 'danger' },
-  invalidated: { label: '已作废', type: 'info' }
+  invalidated: { label: '已作废', type: 'info' },
+  ON_CHAIN: { label: '已同步', type: 'success' },
+  PENDING_CHAIN: { label: '正在同步...', type: 'info', icon: 'Loading' },
+  CHAIN_FAILED: { label: '同步失败', type: 'danger' }
 }
 
 // 加工类型选项
@@ -129,6 +132,45 @@ const confirmProcess = () => {
   chainConfirmVisible.value = true
 }
 
+// 轮询定时器
+const pollTimer = ref(null)
+const pollingForId = ref(null)
+
+const startPolling = (productId = null) => {
+  if (productId) pollingForId.value = productId
+  if (pollTimer.value) return
+  pollTimer.value = setInterval(async () => {
+    await fetchPendingProducts(false)
+    await fetchProcessingProducts(false)
+    await fetchSentProducts(false)
+
+    if (pollingForId.value) {
+      const product = [...processingProducts.value, ...sentProducts.value].find(p => p.id === pollingForId.value)
+      if (product && product.status === 'ON_CHAIN') {
+        if (chainConfirmVisible.value && pendingProcess.value?.form?.productId === product.id) {
+          chainConfirmRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        if (sendInspectVisible.value && pendingSendInspect.value?.form?.id === product.id) {
+          sendInspectRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        pollingForId.value = null
+      }
+    }
+
+    const hasPending = [...pendingProducts.value, ...processingProducts.value, ...sentProducts.value].some(p => p.status === 'PENDING_CHAIN')
+    if (!hasPending && !pollingForId.value) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+const stopPolling = () => {
+  if (pollTimer.value) {
+    clearInterval(pollTimer.value)
+    pollTimer.value = null
+  }
+}
+
 const onProcessConfirm = async () => {
   if (!pendingProcess.value) return
 
@@ -147,20 +189,9 @@ const onProcessConfirm = async () => {
       }
     )
 
-    chainConfirmRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
-
-    // 根据是否自动送检显示不同消息
-    if (result.auto_send_inspect?.success) {
-      ElMessage.success('加工完成，已自动送检至质检员')
-    } else {
-      ElMessage.success('加工记录已上链')
-    }
-
-    // 刷新所有相关列表
-    await fetchPendingProducts()
-    await fetchProcessingProducts()
-    await fetchRejectedProducts()
-    await fetchSentProducts()
+    ElMessage.success('加工请求已提交，请等待区块确认...')
+    
+    startPolling(pendingProcess.value.form.productId)
   } catch (error) {
     chainConfirmRef.value?.setError(error.response?.data?.detail || '加工失败')
   }
@@ -240,67 +271,67 @@ const handleAmendSubmit = async (amendData) => {
 
 // ==================== 数据获取 ====================
 // 获取待加工产品列表
-const fetchPendingProducts = async () => {
+const fetchPendingProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getPendingProducts()
     pendingProducts.value = data
   } catch (error) {
     ElMessage.error('获取待加工产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
 // 获取加工中产品列表
-const fetchProcessingProducts = async () => {
+const fetchProcessingProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getProcessingProducts()
     processingProducts.value = data
   } catch (error) {
     ElMessage.error('获取加工中产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
 // 获取已送检产品列表
-const fetchSentProducts = async () => {
+const fetchSentProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getSentProducts()
     sentProducts.value = data
   } catch (error) {
     ElMessage.error('获取已送检产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
 // 获取被退回产品列表
-const fetchRejectedProducts = async () => {
+const fetchRejectedProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getRejectedProducts()
     rejectedProducts.value = data
   } catch (error) {
     ElMessage.error('获取被退回产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
 // 获取已作废产品列表
-const fetchInvalidatedProducts = async () => {
+const fetchInvalidatedProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await processorApi.getInvalidatedProducts()
     invalidatedProducts.value = data
   } catch (error) {
     ElMessage.error('获取已作废产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
@@ -367,13 +398,8 @@ const onSendInspectConfirm = async () => {
       }
     )
 
-    sendInspectRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
-
-    ElMessage.success('送检成功，产品已进入质检环节')
-
-    // 刷新列表
-    await fetchProcessingProducts()
-    await fetchSentProducts()
+    ElMessage.success('送检请求已提交，请等待区块确认...')
+    startPolling(pendingSendInspect.value.form.id)
   } catch (error) {
     sendInspectRef.value?.setError(error.response?.data?.detail || '送检失败')
   }
@@ -572,9 +598,10 @@ const getProductStatus = (chain) => {
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120" align="center">
           <template #default="{ row }">
             <el-tag :type="statusMap[row.status]?.type">
+              <el-icon v-if="row.status === 'PENDING_CHAIN'" class="is-loading"><Loading /></el-icon>
               {{ statusMap[row.status]?.label }}
             </el-tag>
           </template>

@@ -76,6 +76,48 @@ const onStockInConfirm = () => {
   stockInConfirmVisible.value = true
 }
 
+// 轮询定时器
+const pollTimer = ref(null)
+const pollingForId = ref(null)
+
+const startPolling = (productId = null) => {
+  if (productId) pollingForId.value = productId
+  if (pollTimer.value) return
+  pollTimer.value = setInterval(async () => {
+    await fetchInventoryProducts(false)
+    await fetchSoldProducts(false)
+    await fetchStatistics()
+
+    if (pollingForId.value) {
+      const product = [...inventoryProducts.value, ...soldProducts.value].find(p => p.id === pollingForId.value)
+      // 销售商这边 status 变为 ON_CHAIN
+      if (product && product.status === 'ON_CHAIN') {
+        if (stockInConfirmVisible.value && stockInForm.value.productId === product.id) {
+          stockInRef.value?.setSuccess(product.trace_code, product.block_number, product.tx_hash)
+        }
+        if (sellConfirmVisible.value && sellForm.value.productId === product.id) {
+          // 上架可能产生新纪录，需要从列表拿到 tx_hash
+          const sold = soldProducts.value.find(p => p.trace_code === product.trace_code)
+          sellRef.value?.setSuccess(product.trace_code, sold?.block_number || product.block_number, sold?.tx_hash || product.tx_hash)
+        }
+        pollingForId.value = null
+      }
+    }
+
+    const hasPending = [...inventoryProducts.value, ...soldProducts.value].some(p => p.status === 'PENDING_CHAIN')
+    if (!hasPending && !pollingForId.value) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+const stopPolling = () => {
+  if (pollTimer.value) {
+    clearInterval(pollTimer.value)
+    pollTimer.value = null
+  }
+}
+
 const onStockInChainConfirm = async () => {
   if (!stockInForm.value.productId) return
 
@@ -92,12 +134,10 @@ const onStockInChainConfirm = async () => {
       }
     )
 
-    stockInRef.value?.setSuccess(result)
-    ElMessage.success('入库成功')
-
-    stockInConfirmVisible.value = false
-    await fetchInventoryProducts()
-    await fetchStatistics()
+    ElMessage.success('入库请求已提交，请等待区块确认...')
+    
+    startPolling(stockInForm.value.productId)
+    fetchInventoryProducts()
   } catch (error) {
     stockInRef.value?.setError(error.response?.data?.detail || '入库失败')
   }
@@ -169,14 +209,10 @@ const onSellChainConfirm = async () => {
       }
     )
 
-    sellRef.value?.setSuccess(result)
-    ElMessage.success('上架成功')
-
-    sellConfirmVisible.value = false
-
-    // 上架成功后刷新上架记录列表
-    await fetchSoldProducts()
-    await fetchStatistics()
+    ElMessage.success('上架请求已提交，请等待区块确认...')
+    
+    startPolling(sellForm.value.productId)
+    fetchInventoryProducts()
   } catch (error) {
     sellRef.value?.setError(error.response?.data?.detail || '上架失败')
   }
@@ -248,6 +284,9 @@ const getActionLabel = (action) => {
 
 // 获取状态标签
 const getStatusTag = (product) => {
+  if (product.status === 'PENDING_CHAIN') {
+    return { type: 'info', text: '同步中...' }
+  }
   if (!product.warehouse || product.warehouse === '未入库') {
     return { type: 'warning', text: '待入库' }
   }
@@ -302,27 +341,27 @@ const translateRemark = (remark) => {
   return result
 }
 
-const fetchInventoryProducts = async () => {
-  loading.value = true
+const fetchInventoryProducts = async (showLoading = true) => {
+  if (showLoading) loading.value = true
   try {
     const data = await sellerApi.getInventoryProducts()
     inventoryProducts.value = data
   } catch (error) {
     ElMessage.error('获取库存列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
-const fetchSoldProducts = async () => {
-  loading.value = true
+const fetchSoldProducts = async (showLoading = true) => {
+  if (showLoading) loading.value = true
   try {
     const data = await sellerApi.getSoldProducts()
     soldProducts.value = data
   } catch (error) {
     ElMessage.error('获取已售列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 

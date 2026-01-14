@@ -1,7 +1,7 @@
 """
 Producer (原料商) API
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -60,6 +60,16 @@ class AmendRequest(BaseModel):
 class InvalidateRequest(BaseModel):
     """产品作废请求"""
     reason: str  # 作废原因
+
+
+class ResubmitRequest(BaseModel):
+    """重新提交请求"""
+    name: Optional[str] = None
+    category: Optional[str] = None
+    origin: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    remark: Optional[str] = None
 
 
 class ProductResponse(BaseModel):
@@ -292,13 +302,71 @@ async def update_product(
     return product
 
 
+def background_submit_to_chain(product_id: int, creator_id: int, operator_name: str, chain_data_str: str, quantity_int: int):
+    """后台异步执行上链任务"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return
+
+        # 调用区块链上链
+        # 注意：这里在后台线程运行，不需要 loop.run_in_executor，直接调用同步方法即可
+        # 或者继续使用 executor 也可以，但 BackgroundTasks 本身就在不同线程/进程（取决于实现）
+        success, tx_hash, block_number = blockchain_client.create_product(
+            trace_code=product.trace_code,
+            name=product.name or "",
+            category=product.category or "",
+            origin=product.origin or "",
+            quantity=quantity_int,
+            unit=product.unit or "",
+            data=chain_data_str,
+            operator_name=operator_name
+        )
+
+        if success:
+            product.status = ProductStatus.ON_CHAIN
+            product.tx_hash = tx_hash
+            product.block_number = block_number
+
+            # 创建上链记录
+            record = ProductRecord(
+                product_id=product.id,
+                stage=ProductStage.PRODUCER,
+                action=RecordAction.HARVEST,
+                data=json.dumps({
+                    "trace_code": product.trace_code,
+                    "action": "submit_to_chain"
+                }, ensure_ascii=False),
+                operator_id=creator_id,
+                operator_name=operator_name,
+                tx_hash=tx_hash,
+                block_number=block_number
+            )
+            db.add(record)
+            db.commit()
+        else:
+            # 上链失败
+            product.status = ProductStatus.CHAIN_FAILED
+            db.commit()
+            print(f"❌ Background chain submission failed for product {product_id}")
+            
+    except Exception as e:
+        print(f"❌ Background task error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @router.post("/products/{product_id}/submit", response_model=ProductResponse)
 async def submit_to_chain(
     product_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """提交上链"""
+    """提交上链 (异步版本)"""
     check_producer_role(current_user)
 
     product = db.query(Product).filter(
@@ -312,12 +380,15 @@ async def submit_to_chain(
     if product.status != ProductStatus.DRAFT:
         raise HTTPException(status_code=400, detail="仅草稿状态可提交上链")
 
-    # 生成溯源码
+    # 生成溯源码并设置状态为“待上链”
     product.trace_code = generate_trace_code()
+    product.status = ProductStatus.PENDING_CHAIN
+    db.commit()
+    db.refresh(product)
 
     # 准备上链数据
     operator_name = current_user.real_name or current_user.username
-    chain_data = json.dumps({
+    chain_data_str = json.dumps({
         "name": product.name,
         "category": product.category,
         "origin": product.origin,
@@ -326,48 +397,18 @@ async def submit_to_chain(
         "unit": product.unit,
         "harvest_date": str(product.harvest_date) if product.harvest_date else None
     }, ensure_ascii=False)
+    
+    quantity_int = int((product.quantity or 0) * 1000)
 
-    # 调用区块链上链（使用线程池避免阻塞）
-    quantity_int = int((product.quantity or 0) * 1000)  # 转换为整数，支持3位小数
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.create_product(
-            trace_code=product.trace_code,
-            name=product.name or "",
-            category=product.category or "",
-            origin=product.origin or "",
-            quantity=quantity_int,
-            unit=product.unit or "",
-            data=chain_data,
-            operator_name=operator_name
-        )
+    # 添加后台任务
+    background_tasks.add_task(
+        background_submit_to_chain,
+        product.id,
+        current_user.id,
+        operator_name,
+        chain_data_str,
+        quantity_int
     )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链上链失败，请稍后重试")
-
-    product.status = ProductStatus.ON_CHAIN
-    product.tx_hash = tx_hash
-    product.block_number = block_number
-
-    # 创建上链记录
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.PRODUCER,
-        action=RecordAction.HARVEST,
-        data=json.dumps({
-            "trace_code": product.trace_code,
-            "action": "submit_to_chain"
-        }, ensure_ascii=False),
-        operator_id=current_user.id,
-        operator_name=operator_name,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
-    db.commit()
-    db.refresh(product)
 
     return product
 
@@ -537,229 +578,156 @@ async def get_invalidated_products(
     return result
 
 
+def background_amend_product(product_id: int, user_id: int, operator_name: str, amend_chain_data: str, reason: str, last_record_id: int, db_field: str, new_value: any):
+    """后台处理修正记录"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product: return
+
+        success, tx_hash, block_number = blockchain_client.add_amend_record(
+            trace_code=product.trace_code, stage=0, data=amend_chain_data,
+            remark=reason, operator_name=operator_name,
+            previous_record_id=last_record_id, amend_reason=reason
+        )
+
+        if success:
+            # 更新产品表中的字段值
+            if hasattr(product, db_field):
+                if db_field == 'quantity':
+                    try: setattr(product, db_field, float(new_value) if new_value else None)
+                    except: pass
+                elif db_field == 'harvest_date':
+                    try:
+                        from datetime import datetime as dt
+                        setattr(product, db_field, dt.fromisoformat(new_value) if new_value else None)
+                    except: pass
+                else:
+                    setattr(product, db_field, new_value if new_value else None)
+
+            record = ProductRecord(
+                product_id=product.id, stage=ProductStage.PRODUCER, action=RecordAction.AMEND,
+                data=amend_chain_data, remark=reason, operator_id=user_id, operator_name=operator_name,
+                previous_record_id=last_record_id if last_record_id > 0 else None,
+                amend_reason=reason, tx_hash=tx_hash, block_number=block_number
+            )
+            product.status = ProductStatus.ON_CHAIN
+            db.add(record)
+            db.commit()
+        else:
+            product.status = ProductStatus.CHAIN_FAILED
+            db.commit()
+    except Exception as e:
+        print(f"❌ Background amend error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
 @router.post("/products/{product_id}/amend", response_model=RecordResponse)
 async def amend_product(
     product_id: int,
     amend_data: AmendRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """提交修正记录（仅已上链状态可修正）"""
+    """提交修正记录 (异步)"""
     check_producer_role(current_user)
+    product = db.query(Product).filter(Product.id == product_id, Product.creator_id == current_user.id).first()
+    if not product: raise HTTPException(status_code=404, detail="原料不存在")
+    if product.status != ProductStatus.ON_CHAIN: raise HTTPException(status_code=400, detail="仅已上链产品可修正")
 
-    product = db.query(Product).filter(
-        Product.id == product_id,
-        Product.creator_id == current_user.id
-    ).first()
+    last_record = db.query(ProductRecord).filter(ProductRecord.product_id == product_id).order_by(ProductRecord.id.desc()).first()
+    
+    field_mapping = {'harvest_date': 'harvest_date', 'harvestDate': 'harvest_date', 'batch_no': 'batch_no', 'batchNo': 'batch_no', 'name': 'name', 'category': 'category', 'origin': 'origin', 'quantity': 'quantity', 'unit': 'unit'}
+    db_field = field_mapping.get(amend_data.field, amend_data.field)
 
-    if not product:
-        raise HTTPException(status_code=404, detail="原料不存在")
+    amend_chain_data = json.dumps({"field": amend_data.field, "old_value": amend_data.old_value, "new_value": amend_data.new_value}, ensure_ascii=False)
 
-    if product.status != ProductStatus.ON_CHAIN:
-        raise HTTPException(status_code=400, detail="仅已上链产品可提交修正")
-
-    # 获取最后一条记录 ID
-    last_record = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product_id
-    ).order_by(ProductRecord.id.desc()).first()
-
-    # 准备修正数据
-    operator_name = current_user.real_name or current_user.username
-    amend_chain_data = json.dumps({
-        "field": amend_data.field,
-        "old_value": amend_data.old_value,
-        "new_value": amend_data.new_value
-    }, ensure_ascii=False)
-
-    # 调用区块链添加修正记录（使用线程池避免阻塞）
-    # Stage.PRODUCER = 0
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.add_amend_record(
-            trace_code=product.trace_code,
-            stage=0,  # PRODUCER
-            data=amend_chain_data,
-            remark=amend_data.reason,
-            operator_name=operator_name,
-            previous_record_id=last_record.id if last_record else 0,
-            amend_reason=amend_data.reason
-        )
+    background_tasks.add_task(
+        background_amend_product,
+        product.id, current_user.id, current_user.real_name or current_user.username,
+        amend_chain_data, amend_data.reason, last_record.id if last_record else 0,
+        db_field, amend_data.new_value
     )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链修正记录提交失败，请稍后重试")
-
-    # 同时更新产品表中的字段值（让前端显示最新数据）
-    field_to_update = amend_data.field
-    new_value = amend_data.new_value
-
-    # 字段名映射（前端字段名 -> 数据库字段名）
-    field_mapping = {
-        'harvest_date': 'harvest_date',
-        'harvestDate': 'harvest_date',
-        'batch_no': 'batch_no',
-        'batchNo': 'batch_no',
-        'name': 'name',
-        'category': 'category',
-        'origin': 'origin',
-        'quantity': 'quantity',
-        'unit': 'unit'
-    }
-
-    db_field = field_mapping.get(field_to_update, field_to_update)
-
-    # 根据字段类型转换值
-    if hasattr(product, db_field):
-        if db_field == 'quantity':
-            try:
-                setattr(product, db_field, float(new_value) if new_value else None)
-            except (ValueError, TypeError):
-                setattr(product, db_field, None)
-        elif db_field == 'harvest_date':
-            try:
-                from datetime import datetime as dt
-                setattr(product, db_field, dt.fromisoformat(new_value) if new_value else None)
-            except (ValueError, TypeError):
-                setattr(product, db_field, None)
-        else:
-            setattr(product, db_field, new_value if new_value else None)
-
-    # 创建修正记录
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.PRODUCER,
-        action=RecordAction.AMEND,
-        data=amend_chain_data,
-        remark=amend_data.reason,
-        operator_id=current_user.id,
-        operator_name=operator_name,
-        previous_record_id=last_record.id if last_record else None,
-        amend_reason=amend_data.reason,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
+    product.status = ProductStatus.PENDING_CHAIN
     db.commit()
-    db.refresh(record)
+    
+    # 立即返回一个临时响应（因为前端期望 RecordResponse）
+    # 实际上异步模式下 RecordResponse 可能无法立即提供所有数据
+    return ProductRecord(
+        product_id=product.id, stage=ProductStage.PRODUCER, action=RecordAction.AMEND,
+        data=amend_chain_data, remark=amend_data.reason, operator_id=current_user.id,
+        operator_name=current_user.real_name or current_user.username, created_at=datetime.now()
+    )
 
-    return record
+def background_resubmit_product(product_id: int, user_id: int, operator_name: str, resubmit_data_str: str):
+    """后台处理重新提交"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product: return
 
+        success, tx_hash, block_number = blockchain_client.add_record(
+            trace_code=product.trace_code, stage=0, action=5, # Action.CREATE
+            data=resubmit_data_str, remark="重新提交", operator_name=operator_name
+        )
 
-class ResubmitRequest(BaseModel):
-    """重新提交请求"""
-    name: Optional[str] = None
-    category: Optional[str] = None
-    origin: Optional[str] = None
-    quantity: Optional[float] = None
-    unit: Optional[str] = None
-    remark: Optional[str] = None
-
+        if success:
+            product.current_stage = ProductStage.PROCESSOR
+            product.current_holder_id = None
+            product.status = ProductStatus.ON_CHAIN
+            product.tx_hash, product.block_number = tx_hash, block_number
+            db.add(ProductRecord(
+                product_id=product.id, stage=ProductStage.PRODUCER, action=RecordAction.CREATE,
+                data=resubmit_data_str, remark="重新提交", operator_id=user_id, operator_name=operator_name,
+                tx_hash=tx_hash, block_number=block_number
+            ))
+            db.commit()
+        else:
+            product.status = ProductStatus.CHAIN_FAILED
+            db.commit()
+    except Exception as e:
+        print(f"❌ Background resubmit error: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 @router.post("/products/{product_id}/resubmit")
 async def resubmit_rejected_product(
     product_id: int,
     data: ResubmitRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    重新提交被退回的产品
-    - 更新产品信息（如有修改）
-    - 创建重新提交记录并上链
-    - 将产品重新发送到加工商阶段
-    """
+    """重新提交 (异步)"""
     check_producer_role(current_user)
+    product = db.query(Product).filter(Product.id == product_id, Product.current_holder_id == current_user.id).first()
+    if not product: raise HTTPException(status_code=404, detail="产品不存在")
 
-    # 查询产品
-    product = db.query(Product).filter(
-        Product.id == product_id,
-        Product.current_holder_id == current_user.id,
-        Product.current_stage == ProductStage.PRODUCER
-    ).first()
-
-    if not product:
-        raise HTTPException(status_code=404, detail="产品不存在或无权操作")
-
-    # 检查是否有退回记录
-    reject_record = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product_id,
-        ProductRecord.action == RecordAction.REJECT
-    ).first()
-
-    if not reject_record:
-        raise HTTPException(status_code=400, detail="该产品未被退回")
-
-    # 更新产品信息（如有提供）
-    if data.name:
-        product.name = data.name
-    if data.category:
-        product.category = data.category
-    if data.origin:
-        product.origin = data.origin
-    if data.quantity:
-        product.quantity = data.quantity
-    if data.unit:
-        product.unit = data.unit
-
-    # 准备上链数据
-    operator_name = current_user.real_name or current_user.username
-    resubmit_data = {
-        "action": "resubmit",
-        "name": product.name,
-        "category": product.category,
-        "origin": product.origin,
-        "quantity": product.quantity,
-        "unit": product.unit,
-        "remark": data.remark or "修改后重新提交"
-    }
-
-    # 调用区块链添加记录（使用线程池避免阻塞）
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=0,  # PRODUCER
-            action=5,  # CREATE (重新创建)
-            data=json.dumps(resubmit_data, ensure_ascii=False),
-            remark=f"重新提交: {data.remark or '修改后重新提交'}",
-            operator_name=operator_name
-        )
-    )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链记录失败")
-
-    # 更新产品阶段 - 重新发送到公共池
-    product.current_stage = ProductStage.PROCESSOR
-    product.current_holder_id = None  # 清空持有者，进入公共池
-    product.updated_at = datetime.now()
-
-    # 创建重新提交记录
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.PRODUCER,
-        action=RecordAction.CREATE,  # 使用 CREATE 表示重新提交
-        data=json.dumps(resubmit_data, ensure_ascii=False),
-        remark=f"重新提交: {data.remark or '修改后重新提交'}",
-        operator_id=current_user.id,
-        operator_name=operator_name,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
+    if data.name: product.name = data.name
+    if data.category: product.category = data.category
+    if data.origin: product.origin = data.origin
+    if data.quantity: product.quantity = data.quantity
+    if data.unit: product.unit = data.unit
     db.commit()
-    db.refresh(product)
 
-    return {
-        "id": product.id,
-        "trace_code": product.trace_code,
-        "name": product.name,
-        "tx_hash": tx_hash,
-        "block_number": block_number,
-        "message": "产品已重新提交，等待加工商领取"
-    }
+    resubmit_data_str = json.dumps({
+        "action": "resubmit", "name": product.name, "category": product.category,
+        "origin": product.origin, "quantity": product.quantity, "unit": product.unit
+    }, ensure_ascii=False)
+
+    background_tasks.add_task(
+        background_resubmit_product,
+        product.id, current_user.id, current_user.real_name or current_user.username,
+        resubmit_data_str
+    )
+    product.status = ProductStatus.PENDING_CHAIN
+    db.commit()
+    return {"message": "重新提交请求已发送，后台处理中"}
 
 
 @router.get("/rejected")

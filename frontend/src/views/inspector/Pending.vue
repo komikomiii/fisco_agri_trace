@@ -36,7 +36,10 @@ const currentList = computed(() => {
 const statusMap = {
   pending: { label: '待检测', type: 'warning' },
   testing: { label: '检测中', type: 'primary' },
-  completed: { label: '已完成', type: 'success' }
+  completed: { label: '已完成', type: 'success' },
+  ON_CHAIN: { label: '已同步', type: 'success' },
+  PENDING_CHAIN: { label: '正在同步...', type: 'info', icon: 'Loading' },
+  CHAIN_FAILED: { label: '同步失败', type: 'danger' }
 }
 
 // 质检类型映射
@@ -54,6 +57,45 @@ const processTypeMap = {
   pack: '包装封装',
   freeze: '冷冻处理',
   dry: '烘干处理'
+}
+
+// 轮询定时器
+const pollTimer = ref(null)
+const pollingForId = ref(null)
+
+const startPolling = (productId = null) => {
+  if (productId) pollingForId.value = productId
+  if (pollTimer.value) return
+  pollTimer.value = setInterval(async () => {
+    await fetchPendingProducts(false)
+    await fetchTestingProducts(false)
+    await fetchCompletedProducts(false)
+
+    if (pollingForId.value) {
+      const product = completedProducts.value.find(p => p.id === pollingForId.value)
+      if (product && product.status === 'completed') { // 质检员这边 status 变为 completed
+        if (inspectConfirmVisible.value && inspectForm.value.productId === product.id) {
+          // 需要获取最新的记录以拿到交易信息
+          const records = await inspectorApi.getProductRecords(product.id)
+          const latest = records[records.length - 1]
+          inspectRef.value?.setSuccess(product.trace_code, latest.block_number, latest.tx_hash)
+        }
+        pollingForId.value = null
+      }
+    }
+
+    const hasPending = [...pendingProducts.value, ...testingProducts.value].some(p => p.status === 'PENDING_CHAIN')
+    if (!hasPending && !pollingForId.value) {
+      stopPolling()
+    }
+  }, 3000)
+}
+
+const stopPolling = () => {
+  if (pollTimer.value) {
+    clearInterval(pollTimer.value)
+    pollTimer.value = null
+  }
 }
 
 // ==================== 开始检测 ====================
@@ -89,9 +131,7 @@ const onStartInspectConfirm = async () => {
       }
     )
 
-    startInspectRef.value?.setSuccess()
     ElMessage.success('开始检测成功')
-
     startInspectVisible.value = false
     await fetchPendingProducts()
     await fetchTestingProducts()
@@ -189,58 +229,50 @@ const onInspectChainConfirm = async () => {
       }
     )
 
-    inspectRef.value?.setSuccess(result.trace_code, result.block_number, result.tx_hash)
-
-    if (result.qualified) {
-      ElMessage.success('检测合格，产品已进入销售环节')
-    } else if (result.action === 'invalidate') {
-      ElMessage.warning('产品已作废，所有参与者可在已作废列表中查看')
-    } else {
-      const stageLabel = result.reject_to_stage === 'producer' ? '原料商' : '加工商'
-      ElMessage.warning(`检测不合格，产品已退回${stageLabel}`)
-    }
-
-    await fetchTestingProducts()
-    await fetchCompletedProducts()
+    ElMessage.success('质检结果已提交，请等待区块确认...')
+    
+    startPolling(inspectForm.value.productId)
+    fetchTestingProducts()
+    fetchCompletedProducts()
   } catch (error) {
     inspectRef.value?.setError(error.response?.data?.detail || '检测失败')
   }
 }
 
 // ==================== 数据获取 ====================
-const fetchPendingProducts = async () => {
+const fetchPendingProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await inspectorApi.getPendingProducts()
     pendingProducts.value = data
   } catch (error) {
     ElMessage.error('获取待检测产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
-const fetchTestingProducts = async () => {
+const fetchTestingProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await inspectorApi.getTestingProducts()
     testingProducts.value = data
   } catch (error) {
     ElMessage.error('获取检测中产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
-const fetchCompletedProducts = async () => {
+const fetchCompletedProducts = async (showLoading = true) => {
   try {
-    loading.value = true
+    if (showLoading) loading.value = true
     const data = await inspectorApi.getCompletedProducts()
     completedProducts.value = data
   } catch (error) {
     ElMessage.error('获取已完成产品列表失败')
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
 
@@ -432,9 +464,10 @@ const translateRemark = (remark) => {
             <span class="quantity">{{ row.quantity }} {{ row.unit || 'kg' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120" align="center">
           <template #default="{ row }">
             <el-tag :type="statusMap[row.status]?.type">
+              <el-icon v-if="row.status === 'PENDING_CHAIN'" class="is-loading"><Loading /></el-icon>
               {{ statusMap[row.status]?.label }}
             </el-tag>
           </template>
@@ -564,25 +597,6 @@ const translateRemark = (remark) => {
         </el-button>
       </template>
     </el-dialog>
-
-    <!-- 开始检测确认弹窗 -->
-    <ChainConfirm
-      v-model:visible="startInspectVisible"
-      title="确认开始检测"
-      :data="{
-        product: startInspectForm.product?.name || '',
-        inspectType: inspectTypeMap[startInspectForm.inspectType] || '质量检测',
-        notes: startInspectForm.notes || '无'
-      }"
-      :data-labels="{
-        product: '产品名称',
-        inspectType: '检测类型',
-        notes: '备注'
-      }"
-      :loading="false"
-      @confirm="onStartInspectConfirm"
-      ref="startInspectRef"
-    />
 
     <!-- 不合格处理方式选择对话框 -->
     <el-dialog v-model="unqualifiedActionVisible" title="选择处理方式" width="500px">
@@ -746,7 +760,7 @@ const translateRemark = (remark) => {
             <el-timeline-item
               v-for="record in detailRecords"
               :key="record.id"
-              :timestamp="formatTime(record.timestamp || record.created_at)"
+              :timestamp="formatTime(record.created_at)"
               :type="record.action === 'amend' ? 'warning' : 'primary'"
             >
               <div class="record-item">

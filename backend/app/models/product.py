@@ -12,6 +12,7 @@ class ProductStatus(str, enum.Enum):
     DRAFT = "DRAFT"                    # 草稿
     PENDING_CHAIN = "PENDING_CHAIN"    # 待上链
     ON_CHAIN = "ON_CHAIN"              # 已上链
+    CHAIN_FAILED = "CHAIN_FAILED"      # 上链失败
     TERMINATED = "TERMINATED"          # 已终止
     INVALIDATED = "INVALIDATED"        # 已作废
 

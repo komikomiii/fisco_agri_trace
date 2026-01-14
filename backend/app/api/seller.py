@@ -1,7 +1,7 @@
 """
 Seller (销售商) API
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -111,6 +111,7 @@ async def list_inventory_products(
             "available_quantity": available_quantity,
             "origin": product.origin,
             "warehouse": warehouse,
+            "status": product.status,
             "stock_in_time": stock_in_record.created_at.isoformat() if stock_in_record else None
         })
 
@@ -175,187 +176,123 @@ async def list_sold_products(
     return result
 
 
+def background_stock_in(product_id: int, user_id: int, operator_name: str, chain_data_str: str, warehouse: str):
+    """后台处理入库"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product: return
+
+        success, tx_hash, block_number = blockchain_client.add_record(
+            trace_code=product.trace_code, stage=3, action=7,
+            data=chain_data_str, remark=f"入库: {warehouse}",
+            operator_name=operator_name
+        )
+
+        if success:
+            product.status = ProductStatus.ON_CHAIN
+            db.add(ProductRecord(
+                product_id=product.id, stage=ProductStage.SELLER, action=RecordAction.STOCK_IN,
+                data=chain_data_str, remark=f"入库: {warehouse}",
+                operator_id=user_id, operator_name=operator_name,
+                tx_hash=tx_hash, block_number=block_number
+            ))
+            db.commit()
+    except Exception as e:
+        print(f"❌ Background stock-in error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+def background_sell_product(product_id: int, user_id: int, operator_name: str, chain_data_str: str, remark: str):
+    """后台处理销售/上架"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product: return
+
+        success, tx_hash, block_number = blockchain_client.add_record(
+            trace_code=product.trace_code, stage=3, action=8,
+            data=chain_data_str, remark=remark,
+            operator_name=operator_name
+        )
+
+        if success:
+            product.status = ProductStatus.ON_CHAIN
+            db.add(ProductRecord(
+                product_id=product.id, stage=ProductStage.SELLER, action=RecordAction.SELL,
+                data=chain_data_str, remark=remark,
+                operator_id=user_id, operator_name=operator_name,
+                tx_hash=tx_hash, block_number=block_number
+            ))
+            db.commit()
+    except Exception as e:
+        print(f"❌ Background sell error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
 @router.post("/products/{product_id}/stock-in")
 async def stock_in_product(
     product_id: int,
     stock_data: StockInRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    产品入库
-    1. 验证产品在销售商阶段
-    2. 调用智能合约记录入库操作
-    3. 更新产品记录
-    """
+    """入库 (异步)"""
     check_seller_role(current_user)
-
-    # 1. 获取产品
     product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="产品不存在")
+    if not product or product.current_stage != ProductStage.SELLER or product.current_holder_id != current_user.id:
+        raise HTTPException(status_code=400, detail="产品不存在或无权操作")
 
-    # 2. 验证产品状态
-    if product.current_stage != ProductStage.SELLER:
-        raise HTTPException(status_code=400, detail="产品不在销售阶段")
-
-    if product.current_holder_id != current_user.id:
-        raise HTTPException(status_code=400, detail="该产品未分配给当前销售商")
-
-    # 3. 检查是否已经入库
-    existing_stock_in = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product_id,
-        ProductRecord.action == RecordAction.STOCK_IN
-    ).first()
-
-    if existing_stock_in:
-        raise HTTPException(status_code=400, detail="该产品已入库")
-
-    # 4. 准备链上数据
-    chain_data = {
-        "trace_code": product.trace_code,
-        "action": "stock_in",
-        "warehouse": stock_data.warehouse,
-        "quantity": stock_data.quantity or product.quantity,
-        "notes": stock_data.notes,
+    chain_data_str = json.dumps({
+        "trace_code": product.trace_code, "action": "stock_in",
+        "warehouse": stock_data.warehouse, "quantity": stock_data.quantity or product.quantity,
         "seller": current_user.real_name or current_user.username,
         "timestamp": datetime.now().isoformat()
-    }
+    }, ensure_ascii=False)
 
-    # 5. 调用智能合约（使用线程池避免阻塞）
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=3,  # ProductStage.SELLER
-            action=7,  # RecordAction.STOCK_IN
-            data=json.dumps(chain_data, ensure_ascii=False),
-            remark=f"入库: {stock_data.warehouse}",
-            operator_name=current_user.real_name or current_user.username
-        )
+    background_tasks.add_task(
+        background_stock_in,
+        product.id, current_user.id, current_user.real_name or current_user.username,
+        chain_data_str, stock_data.warehouse
     )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链上链失败")
-
-    # 6. 创建入库记录
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.SELLER,
-        action=RecordAction.STOCK_IN,
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"入库: {stock_data.warehouse}",
-        operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
+    product.status = ProductStatus.PENDING_CHAIN
     db.commit()
-    db.refresh(record)
-
-    return {
-        "message": "入库成功",
-        "product_id": product.id,
-        "trace_code": product.trace_code,
-        "tx_hash": tx_hash,
-        "block_number": block_number
-    }
-
+    return {"message": "入库请求已提交"}
 
 @router.post("/products/{product_id}/sell")
 async def sell_product(
     product_id: int,
     sell_data: SellRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    产品上架（记录上架价格和位置）
-    1. 验证产品在销售商阶段
-    2. 检查产品是否已入库
-    3. 调用智能合约记录上架操作
-    4. 创建上架记录（不改变产品阶段）
-    """
+    """销售/上架 (异步)"""
     check_seller_role(current_user)
-
-    # 1. 获取产品
     product = db.query(Product).filter(Product.id == product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="产品不存在")
+    if not product or product.current_stage != ProductStage.SELLER or product.current_holder_id != current_user.id:
+        raise HTTPException(status_code=400, detail="产品不存在或无权操作")
 
-    # 2. 验证产品状态
-    if product.current_stage != ProductStage.SELLER:
-        raise HTTPException(status_code=400, detail="产品不在销售阶段")
-
-    if product.current_holder_id != current_user.id:
-        raise HTTPException(status_code=400, detail="该产品未分配给当前销售商")
-
-    # 3. 检查是否已入库
-    stock_in_record = db.query(ProductRecord).filter(
-        ProductRecord.product_id == product_id,
-        ProductRecord.action == RecordAction.STOCK_IN
-    ).first()
-
-    if not stock_in_record:
-        raise HTTPException(status_code=400, detail="请先完成入库操作")
-
-    # 4. 准备链上数据（上架记录）
-    chain_data = {
-        "trace_code": product.trace_code,
-        "action": "shelf_listing",  # 上架
-        "quantity": sell_data.quantity,
-        "price": sell_data.buyer_phone,  # buyer_phone 字段存储价格
-        "shelf_location": sell_data.buyer_name,  # buyer_name 字段存储上架位置
-        "notes": sell_data.notes,
-        "seller": current_user.real_name or current_user.username,
+    chain_data_str = json.dumps({
+        "trace_code": product.trace_code, "action": "shelf_listing",
+        "quantity": sell_data.quantity, "price": sell_data.buyer_phone,
+        "shelf_location": sell_data.buyer_name, "seller": current_user.real_name or current_user.username,
         "timestamp": datetime.now().isoformat()
-    }
+    }, ensure_ascii=False)
 
-    # 5. 调用智能合约记录上架（使用线程池避免阻塞）
-    loop = asyncio.get_event_loop()
-    success, tx_hash, block_number = await loop.run_in_executor(
-        blockchain_executor,
-        lambda: blockchain_client.add_record(
-            trace_code=product.trace_code,
-            stage=3,  # ProductStage.SELLER
-            action=8,  # RecordAction.SELL（复用 sell action 表示上架）
-            data=json.dumps(chain_data, ensure_ascii=False),
-            remark=f"上架: {sell_data.buyer_name}, 价格: {sell_data.buyer_phone}",
-            operator_name=current_user.real_name or current_user.username
-        )
+    background_tasks.add_task(
+        background_sell_product,
+        product.id, current_user.id, current_user.real_name or current_user.username,
+        chain_data_str, f"上架: {sell_data.buyer_name}, 价格: {sell_data.buyer_phone}"
     )
-
-    if not success:
-        raise HTTPException(status_code=500, detail="区块链上链失败")
-
-    # 6. 创建上架记录（产品状态保持 SELLER 阶段不变）
-    record = ProductRecord(
-        product_id=product.id,
-        stage=ProductStage.SELLER,
-        action=RecordAction.SELL,
-        data=json.dumps(chain_data, default=str, ensure_ascii=False),
-        remark=f"上架位置: {sell_data.buyer_name}, 价格: ¥{sell_data.buyer_phone}",
-        operator_id=current_user.id,
-        operator_name=current_user.real_name or current_user.username,
-        tx_hash=tx_hash,
-        block_number=block_number
-    )
-    db.add(record)
+    product.status = ProductStatus.PENDING_CHAIN
     db.commit()
-    db.refresh(record)
-
-    return {
-        "message": "上架成功",
-        "product_id": product.id,
-        "trace_code": product.trace_code,
-        "quantity": sell_data.quantity,
-        "shelf_location": sell_data.buyer_name,
-        "price": sell_data.buyer_phone,
-        "tx_hash": tx_hash,
-        "block_number": block_number
-    }
+    return {"message": "上架请求已提交"}
 
 
 @router.get("/products/{product_id}/records")

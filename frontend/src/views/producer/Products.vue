@@ -45,6 +45,7 @@ const categories = ['蔬菜', '水果', '粮食', '水产', '畜禽', '其他']
 const chainStatusMap = {
   DRAFT: { label: '未上链', type: 'warning', icon: 'EditPen' },
   ON_CHAIN: { label: '已上链', type: 'success', icon: 'CircleCheckFilled' },
+  PENDING_CHAIN: { label: '正在上链...', type: 'info', icon: 'Loading' },
   INVALIDATED: { label: '已作废', type: 'info', icon: 'Delete' },
   REJECTED: { label: '被退回', type: 'danger', icon: 'RefreshLeft' },
   // 兼容前端小写格式
@@ -57,11 +58,15 @@ const chainStatusMap = {
 // Tab 切换
 const activeTab = ref('draft')
 
+// 轮询定时器
+const pollTimer = ref(null)
+const pollingForId = ref(null) // 正在等待同步的产品 ID
+
 // 加载产品列表
-const fetchProducts = async () => {
+const fetchProducts = async (showLoading = true) => {
   if (!USE_REAL_API) return
 
-  loading.value = true
+  if (showLoading) loading.value = true
   try {
     // 同时获取正常产品、已作废产品和被退回产品
     const [normalProducts, invalidatedProducts, rejected] = await Promise.all([
@@ -81,13 +86,29 @@ const fetchProducts = async () => {
     statusCounts.invalidated = invalidatedProducts.length
     statusCounts.rejected = rejected.length
     statusCounts.all = allProducts.length
+
+    // 如果有正在上链的产品，开启轮询
+    if (normalProducts.some(p => p.status === 'PENDING_CHAIN')) {
+      startPolling()
+    }
   } catch (error) {
     ElMessage.error('获取产品列表失败')
     console.error(error)
   } finally {
-    loading.value = false
+    if (showLoading) loading.value = false
   }
 }
+
+// 开启轮询
+const startPolling = (productId = null) => {
+  if (productId) pollingForId.value = productId
+  if (pollTimer.value) return
+  
+  pollTimer.value = setInterval(async () => {
+    await fetchProducts(false)
+    
+    // 如果正在显示同步中的弹窗，检查是否已完成
+    if (pollingForId.value) {
 
 // 监听 Tab 切换（不需要重新加载，只需前端过滤）
 const handleTabChange = () => {
@@ -125,7 +146,7 @@ const filteredProducts = computed(() => {
     if (activeTab.value !== 'all') {
       const targetStatus = statusMap[activeTab.value]
       if (targetStatus) {
-        list = list.filter(p => p.status === targetStatus)
+        list = list.filter(p => p.status === targetStatus || (activeTab.value === 'draft' && p.status === 'PENDING_CHAIN'))
       }
     }
 
@@ -469,14 +490,14 @@ const onChainConfirm = async () => {
 
   try {
     if (USE_REAL_API) {
-      const result = await producerApi.submitToChain(pendingChainData.value.chainId)
-      chainConfirmRef.value?.setSuccess(
-        result.trace_code,
-        result.block_number,
-        result.tx_hash
-      )
-      ElMessage.success('上链成功！溯源码：' + result.trace_code)
+      await producerApi.submitToChain(pendingChainData.value.chainId)
+      
+      // 保持弹窗开启，状态显示为同步中（由 setLoading 保持）
+      // 实际上可以在 ChainConfirm 里加一个消息提示
+      ElMessage.success('上链请求已提交，请等待区块确认...')
+      
       fetchProducts()
+      startPolling(pendingChainData.value.chainId)
     } else {
       const result = await productStore.confirmOnChain(pendingChainData.value.chainId)
       if (result) {
@@ -598,14 +619,10 @@ const onAmendChainConfirm = async () => {
 
   if (USE_REAL_API) {
     try {
-      let lastResult = null
-
       // 提交每个修改的字段
       for (const field of changedFields) {
-        // 转换字段名为后端格式
         const backendField = fieldNameMap[field] || field
-
-        lastResult = await producerApi.amendProduct(product.id, {
+        await producerApi.amendProduct(product.id, {
           field: backendField,
           old_value: String(currentData[field] || ''),
           new_value: String(amendData.changes[field]),
@@ -613,14 +630,10 @@ const onAmendChainConfirm = async () => {
         })
       }
 
-      // 显示成功状态
-      amendChainConfirmRef.value?.setSuccess(
-        product.trace_code || product.traceCode,
-        lastResult?.block_number,
-        lastResult?.tx_hash
-      )
-
-      // 刷新数据
+      // 修正信息不再立即 setSuccess，而是等待轮询
+      ElMessage.success('修正请求已提交，请等待区块确认...')
+      
+      startPolling(product.id)
       fetchProducts()
     } catch (error) {
       amendChainConfirmRef.value?.setError(error.response?.data?.detail || error.message || '修正记录上链失败')
@@ -862,12 +875,10 @@ const onResubmitConfirm = async () => {
       remark: resubmitForm.value.remark
     })
 
-    resubmitConfirmRef.value?.setSuccess(
-      result.trace_code,
-      result.block_number,
-      result.tx_hash
-    )
-    ElMessage.success(result.message || '产品已重新提交')
+    // 重新提交不再立即 setSuccess，而是等待轮询
+    ElMessage.success('重新提交已发送，请等待区块确认...')
+    
+    startPolling(resubmitForm.value.productId)
     fetchProducts()
   } catch (error) {
     resubmitConfirmRef.value?.setError(error.response?.data?.detail || error.message || '重新提交失败')
