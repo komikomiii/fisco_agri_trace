@@ -4,8 +4,8 @@ AI API - AI 溯源简报生成接口
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
-from zhipuai import ZhipuAI
-
+import httpx
+import json
 from app.config import settings
 
 router = APIRouter(prefix="/ai", tags=["AI简报"])
@@ -24,10 +24,29 @@ class AISummaryResponse(BaseModel):
     success: bool
 
 
-def get_glm_client():
-    """获取 GLM API 客户端"""
-    api_key = settings.GLM_API_KEY
-    return ZhipuAI(api_key=api_key)
+async def call_ai_api(messages: List[dict], temperature: float = 0.8, max_tokens: int = 300):
+    """通用 AI API 调用"""
+    headers = {
+        "Authorization": f"Bearer {settings.AI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": settings.AI_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{settings.AI_BASE_URL}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60.0
+        )
+        response.raise_for_status()
+        return response.json()
 
 
 def build_summary_prompt(trace_code: str, chain_data: dict) -> str:
@@ -165,30 +184,18 @@ async def generate_summary(request: AISummaryRequest):
     """
     生成 AI 溯源简报
 
-    调用智谱 GLM-4.5-X 模型，根据区块链溯源数据生成易读的中文简报
+    调用硅基流动 API (GLM-4.5-Air)，根据区块链溯源数据生成易读的中文简报
     """
     try:
-        client = get_glm_client()
-
         # 打印请求数据用于调试
         print(f"=== AI Summary Request ===")
         print(f"trace_code: {request.trace_code}")
-        print(f"chain_data type: {type(request.chain_data)}")
-        if request.chain_data:
-            print(f"chain_data keys: {request.chain_data.keys() if isinstance(request.chain_data, dict) else 'N/A'}")
-            print(f"product_info: {request.chain_data.get('product_info', {})}")
-            print(f"records count: {len(request.chain_data.get('chain_records', []))}")
-        else:
-            print("chain_data is None or empty")
-
+        
         # 构建提示词
         prompt = build_summary_prompt(request.trace_code, request.chain_data)
-        print(f"Generated prompt length: {len(prompt)}")
-
-        # 调用 GLM API
-        # 使用 glm-4.5-x 模型，禁用深度思考以直接获取结果
-        response = client.chat.completions.create(
-            model="glm-4.5-x",
+        
+        # 调用 AI API
+        response_data = await call_ai_api(
             messages=[
                 {
                     "role": "system",
@@ -200,15 +207,11 @@ async def generate_summary(request: AISummaryRequest):
                 }
             ],
             temperature=0.8,
-            max_tokens=300,
-            thinking={
-                "type": "disabled"  # 禁用深度思考，直接输出结果
-            },
+            max_tokens=300
         )
 
         # 提取生成的简报
-        message = response.choices[0].message
-        content = message.content if message.content else ""
+        content = response_data["choices"][0]["message"]["content"]
 
         if content:
             summary = content.strip()
@@ -231,17 +234,14 @@ async def generate_summary(request: AISummaryRequest):
 async def ai_health():
     """检查 AI API 服务状态"""
     try:
-        client = get_glm_client()
-        # 简单测试调用
-        response = client.chat.completions.create(
-            model="glm-4.7",
+        response_data = await call_ai_api(
             messages=[{"role": "user", "content": "你好"}],
-            max_tokens=10,
+            max_tokens=10
         )
         return {
             "status": "healthy",
             "connected": True,
-            "model": "glm-4.7"
+            "model": settings.AI_MODEL
         }
     except Exception as e:
         return {

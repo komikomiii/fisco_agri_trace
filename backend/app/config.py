@@ -38,7 +38,9 @@ class Settings:
     FISCO_GROUP_ID: int = 1
 
     # AI API
-    GLM_API_KEY: str = os.getenv("GLM_API_KEY", "")
+    AI_API_KEY: str = os.getenv("AI_API_KEY", "sk-hladjoxbfpshullqqsrflhzuaezokklpxsxonaoheyxcabgc")
+    AI_MODEL: str = "zai-org/GLM-4.5-Air"
+    AI_BASE_URL: str = "https://api.siliconflow.cn/v1"
 
 
 @lru_cache()

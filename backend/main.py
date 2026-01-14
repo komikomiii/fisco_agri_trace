@@ -19,50 +19,12 @@ from passlib.context import CryptContext
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def init_test_users():
-    """初始化测试用户"""
-    db = SessionLocal()
-    try:
-        # 检查是否已有用户
-        if db.query(User).first():
-            print("✅ Users already exist, skipping initialization")
-            return
-
-        # 创建测试用户
-        test_users = [
-            {"username": "producer", "role": UserRole.PRODUCER, "real_name": "张三农场"},
-            {"username": "processor", "role": UserRole.PROCESSOR, "real_name": "绿源加工厂"},
-            {"username": "inspector", "role": UserRole.INSPECTOR, "real_name": "李质检"},
-            {"username": "seller", "role": UserRole.SELLER, "real_name": "优鲜超市"},
-            {"username": "consumer", "role": UserRole.CONSUMER, "real_name": "王小明"},
-        ]
-
-        for user_data in test_users:
-            user = User(
-                username=user_data["username"],
-                password_hash=pwd_context.hash("123456"),
-                role=user_data["role"],
-                real_name=user_data["real_name"]
-            )
-            db.add(user)
-
-        db.commit()
-        print("✅ Test users created successfully")
-    except Exception as e:
-        print(f"❌ Failed to create test users: {e}")
-        db.rollback()
-    finally:
-        db.close()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup: Create database tables
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables created")
-    # Initialize test users
-    init_test_users()
     yield
     # Shutdown
     print("👋 Application shutting down")
