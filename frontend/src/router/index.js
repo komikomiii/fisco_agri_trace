@@ -98,9 +98,24 @@ const router = createRouter({
   routes
 })
 
-// 路由守卫
 router.beforeEach((to, from, next) => {
   document.title = to.meta.title || '农产品溯源平台'
+
+  const token = localStorage.getItem('token')
+  const user = JSON.parse(localStorage.getItem('user') || 'null')
+
+  if (to.path === '/login' || to.name === 'PublicTrace') {
+    return next()
+  }
+
+  if (to.path.startsWith('/dashboard') && !token) {
+    return next('/login')
+  }
+
+  if (to.meta.role && user?.role !== to.meta.role) {
+    return next('/dashboard/home')
+  }
+
   next()
 })
 

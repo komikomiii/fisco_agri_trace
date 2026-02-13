@@ -24,6 +24,8 @@ const loading = ref(true)
 const traceCode = ref(route.params.code)
 const traceData = ref(null)
 const verified = ref(false)
+const chainVerified = ref(false)
+const chainVerifyTime = ref('')
 
 // 详情展开状态
 const expandedRecordId = ref(null)
@@ -81,6 +83,8 @@ const fetchTraceData = async () => {
     if (response && response.exists) {
       traceData.value = response
       verified.value = true
+      chainVerified.value = true
+      chainVerifyTime.value = new Date().toLocaleString('zh-CN')
     } else {
       verified.value = false
     }
@@ -521,9 +525,11 @@ const unwatch = router.afterEach((to) => {
           <div class="left-panel">
             <!-- 产品卡片 -->
             <div class="product-card">
-              <div class="verify-status">
+              <div class="verify-status" :class="{ 'chain-verified': chainVerified }">
                 <el-icon :size="20" color="#52c41a"><CircleCheck /></el-icon>
-                <span>区块链验证通过</span>
+                <span v-if="chainVerified">链上数据已验证</span>
+                <span v-else>数据验证中...</span>
+                <span v-if="chainVerifyTime" class="verify-time">{{ chainVerifyTime }}</span>
               </div>
 
               <div class="product-image">
@@ -928,6 +934,7 @@ const unwatch = router.afterEach((to) => {
   align-items: center;
   gap: 6px;
   justify-content: center;
+  flex-wrap: wrap;
   padding: 8px 16px;
   background: linear-gradient(135deg, #f6ffed, #d9f7be);
   border: 1px solid #b7eb8f;
@@ -936,6 +943,14 @@ const unwatch = router.afterEach((to) => {
   font-weight: 600;
   color: #52c41a;
   margin-bottom: 20px;
+}
+
+.verify-time {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8c8c8c;
+  width: 100%;
+  text-align: center;
 }
 
 .product-image {

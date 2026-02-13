@@ -1,15 +1,17 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../../store/user'
-import { useProductStore } from '../../store/product'
 import { ElMessage } from 'element-plus'
+import { producerApi } from '../../api/producer'
+import processorApi from '../../api/processor'
+import inspectorApi from '../../api/inspector'
+import { sellerApi } from '../../api/seller'
+import { blockchainApi } from '../../api/blockchain'
 
 const router = useRouter()
 const userStore = useUserStore()
-const productStore = useProductStore()
 
-// 复制区块链地址
 const copyAddress = () => {
   if (userStore.user?.blockchainAddress) {
     navigator.clipboard.writeText(userStore.user.blockchainAddress).then(() => {
@@ -20,114 +22,141 @@ const copyAddress = () => {
   }
 }
 
-// 模拟统计数据
-const stats = ref({
-  producer: [
-    { label: '原料品种', value: 12, icon: 'Grape', trend: '+3' },
-    { label: '本月采收', value: 156, icon: 'Calendar', trend: '+28' },
-    { label: '待出库', value: 43, icon: 'Box', trend: '-5' },
-    { label: '质检通过', value: 98, icon: 'CircleCheck', suffix: '%' }
-  ],
-  processor: [
-    { label: '待接收', value: 8, icon: 'Inbox', trend: '+2' },
-    { label: '加工中', value: 15, icon: 'Loading', trend: '' },
-    { label: '已完成', value: 234, icon: 'Select', trend: '+18' },
-    { label: '出货批次', value: 67, icon: 'Van', trend: '+5' }
-  ],
-  inspector: [
-    { label: '待检产品', value: 23, icon: 'Document', trend: '+7' },
-    { label: '今日检测', value: 12, icon: 'Timer', trend: '+3' },
-    { label: '合格率', value: 96.5, icon: 'Trophy', suffix: '%' },
-    { label: '报告数', value: 458, icon: 'Tickets', trend: '+45' }
-  ],
-  seller: [
-    { label: '库存品类', value: 45, icon: 'GoodsFilled', trend: '+2' },
-    { label: '今日销售', value: 128, icon: 'ShoppingCart', trend: '+35' },
-    { label: '销售额', value: 18.6, icon: 'Money', suffix: '万', trend: '+2.3' },
-    { label: '客户数', value: 1256, icon: 'User', trend: '+86' }
-  ],
-  consumer: [
-    { label: '溯源查询', value: 28, icon: 'Search', trend: '+5' },
-    { label: '购买记录', value: 156, icon: 'List', trend: '+12' },
-    { label: '收藏产品', value: 23, icon: 'Star', trend: '+3' },
-    { label: '积分', value: 2680, icon: 'Medal', trend: '+150' }
-  ]
+const currentStats = ref([])
+
+const fetchStats = async () => {
+  const role = userStore.user?.role
+  try {
+    if (role === 'producer') {
+      const data = await producerApi.getStatistics()
+      currentStats.value = [
+        { label: '产品总数', value: data.total || 0, icon: 'Grape' },
+        { label: '已上链', value: data.on_chain || 0, icon: 'CircleCheckFilled' },
+        { label: '草稿', value: data.draft || 0, icon: 'EditPen' },
+        { label: '已终止', value: data.terminated || 0, icon: 'RemoveFilled' }
+      ]
+    } else if (role === 'processor') {
+      const data = await processorApi.getStatistics()
+      currentStats.value = [
+        { label: '加工中', value: data.in_processing || 0, icon: 'Loading' },
+        { label: '已接收', value: data.total_received || 0, icon: 'Select' }
+      ]
+    } else if (role === 'inspector') {
+      const data = await inspectorApi.getStatistics()
+      currentStats.value = [
+        { label: '待检产品', value: data.pending_count || 0, icon: 'Document' },
+        { label: '已检测', value: data.completed_count || 0, icon: 'Select' },
+        { label: '合格', value: data.qualified_count || 0, icon: 'CircleCheck' },
+        { label: '合格率', value: data.pass_rate || 0, icon: 'Trophy', suffix: '%' }
+      ]
+    } else if (role === 'seller') {
+      const data = await sellerApi.getStatistics()
+      currentStats.value = [
+        { label: '库存', value: data.inventory_count || 0, icon: 'GoodsFilled' },
+        { label: '已售出', value: data.sold_count || 0, icon: 'ShoppingCart' },
+        { label: '总销量', value: data.total_sales_quantity || 0, icon: 'Money' }
+      ]
+    } else {
+      const history = JSON.parse(localStorage.getItem('trace_history') || '[]')
+      currentStats.value = [
+        { label: '溯源查询', value: history.length, icon: 'Search' }
+      ]
+    }
+  } catch {
+    currentStats.value = []
+  }
+}
+
+const recentOnChainProducts = ref([])
+
+const fetchRecentProducts = async () => {
+  try {
+    const products = await blockchainApi.getOnChainProducts(4, 0)
+    recentOnChainProducts.value = products || []
+  } catch {
+    recentOnChainProducts.value = []
+  }
+}
+
+onMounted(async () => {
+  await fetchStats()
+  fetchActivities()
+  fetchRecentProducts()
 })
 
-const currentStats = computed(() => {
-  const role = userStore.user?.role || 'consumer'
-  return stats.value[role] || []
+const activities = ref([])
+
+const actionLabelMap = {
+  create: '创建产品', harvest: '采收出库', receive: '接收原料', process: '加工处理',
+  send_inspect: '送检', start_inspect: '开始检测', inspect: '检测完成',
+  reject: '退回处理', terminate: '终止链条', stock_in: '入库登记', sell: '销售出库', amend: '信息修正'
+}
+
+const fetchActivities = async () => {
+  const role = userStore.user?.role
+  try {
+    let products = []
+    if (role === 'producer') products = await producerApi.getProducts()
+    else if (role === 'processor') products = await processorApi.getReceivedProducts()
+    else if (role === 'inspector') products = await inspectorApi.getCompletedProducts()
+    else if (role === 'seller') products = await sellerApi.getSoldProducts()
+    else {
+      const history = JSON.parse(localStorage.getItem('trace_history') || '[]')
+      activities.value = history.slice(0, 5).map(h => ({
+        time: h.scanDate || '-',
+        content: `查询溯源：${h.name || h.code}`,
+        type: h.result === 'verified' ? 'success' : 'danger'
+      }))
+      return
+    }
+    if (!Array.isArray(products)) products = []
+    activities.value = products.slice(0, 5).map(p => {
+      const statusMap = {
+        DRAFT: { text: '创建草稿', type: 'info' },
+        ON_CHAIN: { text: '已上链', type: 'success' },
+        PENDING_CHAIN: { text: '正在上链', type: 'warning' },
+        INVALIDATED: { text: '已作废', type: 'danger' }
+      }
+      const info = statusMap[p.status] || { text: p.status || '更新', type: 'info' }
+      const time = p.updated_at || p.created_at || ''
+      const timeStr = time ? new Date(time).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'
+      return { time: timeStr, content: `${p.name || '产品'} - ${info.text}`, type: info.type }
+    })
+  } catch {
+    activities.value = []
+  }
+}
+
+const chartBarColors = ['#52c41a', '#1890ff', '#722ed1', '#fa8c16', '#eb2f96', '#13c2c2']
+
+const chartMax = computed(() => {
+  const vals = currentStats.value.map(s => Number(s.value) || 0)
+  return Math.max(...vals, 1)
 })
 
-// 最近活动 - 根据角色显示不同内容
-const activities = computed(() => {
-  const role = userStore.user?.role || 'consumer'
-  const activityMap = {
+const quickActions = computed(() => {
+  const role = userStore.user?.role
+  const map = {
     producer: [
-      { time: '10:30', content: '原料 有机番茄 已完成采收登记', type: 'success' },
-      { time: '09:45', content: '原料 有机黄瓜 已确认上链', type: 'primary' },
-      { time: '昨天 16:20', content: '原料 有机胡萝卜 已发送给加工商', type: 'info' }
+      { label: '创建原料', icon: 'Plus', path: '/dashboard/producer/products' },
+      { label: '原料管理', icon: 'Grape', path: '/dashboard/producer/products' }
     ],
     processor: [
-      { time: '10:30', content: '番茄酱 500g 加工完成，已送检', type: 'success' },
-      { time: '09:15', content: '接收新原料：有机番茄 500kg', type: 'primary' },
-      { time: '昨天 17:00', content: '黄瓜脆片 加工记录已上链', type: 'info' }
+      { label: '接收原料', icon: 'Inbox', path: '/dashboard/processor/receive' },
+      { label: '加工记录', icon: 'SetUp', path: '/dashboard/processor/process' }
     ],
     inspector: [
-      { time: '11:00', content: '番茄酱 500g 检测完成：合格', type: 'success' },
-      { time: '09:30', content: '开始检测：黄瓜脆片', type: 'primary' },
-      { time: '昨天 15:00', content: '产品退回：农残超标，已通知加工商', type: 'warning' }
+      { label: '待检产品', icon: 'Document', path: '/dashboard/inspector/pending' }
     ],
     seller: [
-      { time: '10:45', content: '番茄酱 500g 入库登记完成', type: 'success' },
-      { time: '09:20', content: '销售出库：黄瓜脆片 x 50', type: 'primary' },
-      { time: '昨天 18:00', content: '生成溯源二维码：有机果蔬礼盒', type: 'info' }
+      { label: '库存管理', icon: 'GoodsFilled', path: '/dashboard/seller/inventory' }
     ],
     consumer: [
-      { time: '10:30', content: '查询溯源：番茄酱 500g', type: 'success' },
-      { time: '昨天 14:00', content: '收藏产品：有机蔬菜礼盒', type: 'primary' },
-      { time: '前天', content: '浏览溯源详情：黄瓜脆片', type: 'info' }
+      { label: '扫码溯源', icon: 'Search', path: '/dashboard/consumer/scan' },
+      { label: '查询记录', icon: 'Clock', path: '/dashboard/consumer/history' }
     ]
   }
-  return activityMap[role] || []
-})
-
-// 溯源统计图表数据
-const chartData = ref({
-  labels: ['1月', '2月', '3月', '4月', '5月', '6月'],
-  values: [120, 200, 150, 280, 220, 350]
-})
-
-// 待办事项 - 根据角色显示
-const todos = computed(() => {
-  const role = userStore.user?.role || 'consumer'
-  const todoMap = {
-    producer: [
-      { id: 1, title: '确认上链待发布的原料 (2)', done: false, priority: 'high' },
-      { id: 2, title: '更新有机番茄产地信息', done: false, priority: 'medium' },
-      { id: 3, title: '处理加工商接收确认', done: true, priority: 'low' }
-    ],
-    processor: [
-      { id: 1, title: '接收待处理原料 (3)', done: false, priority: 'high' },
-      { id: 2, title: '完成番茄酱加工记录', done: false, priority: 'medium' },
-      { id: 3, title: '送检黄瓜脆片', done: true, priority: 'low' }
-    ],
-    inspector: [
-      { id: 1, title: '待检测产品 (5)', done: false, priority: 'high' },
-      { id: 2, title: '完成番茄酱检测报告', done: false, priority: 'medium' },
-      { id: 3, title: '处理退回产品复检', done: false, priority: 'medium' }
-    ],
-    seller: [
-      { id: 1, title: '待入库产品 (2)', done: false, priority: 'high' },
-      { id: 2, title: '处理销售订单', done: false, priority: 'medium' },
-      { id: 3, title: '生成产品二维码', done: true, priority: 'low' }
-    ],
-    consumer: [
-      { id: 1, title: '查看收藏产品更新', done: false, priority: 'low' },
-      { id: 2, title: '完成产品评价', done: false, priority: 'low' }
-    ]
-  }
-  return todoMap[role] || []
+  return map[role] || map.consumer
 })
 
 const greetingText = computed(() => {
@@ -151,88 +180,27 @@ const getGradient = (index) => {
   return `linear-gradient(135deg, ${colors[0]}, ${colors[1]})`
 }
 
-// 最近产品链 - 根据角色筛选
-const recentProducts = computed(() => {
-  const role = userStore.user?.role || 'consumer'
-  let chains = productStore.productChains || []
-
-  // 根据角色筛选相关产品
-  switch (role) {
-    case 'producer':
-      // 原料商：显示自己创建的产品
-      chains = chains.filter(c => c.records.some(r => r.stage === 'producer'))
-      break
-    case 'processor':
-      // 加工商：显示已接收或待接收的产品
-      chains = chains.filter(c =>
-        c.records.some(r => r.stage === 'processor') ||
-        (c.status === 'on_chain' && c.currentStage === 'producer')
-      )
-      break
-    case 'inspector':
-      // 质检员：显示已检测或待检测的产品
-      chains = chains.filter(c =>
-        c.records.some(r => r.stage === 'inspector') ||
-        c.records.some(r => r.action === 'send_inspect')
-      )
-      break
-    case 'seller':
-      // 销售商：显示已入库或可入库的产品
-      chains = chains.filter(c =>
-        c.records.some(r => r.stage === 'seller') ||
-        c.records.some(r => r.action === 'inspect' && r.data?.result === 'pass')
-      )
-      break
-    case 'consumer':
-      // 消费者：显示已售出的可查询产品
-      chains = chains.filter(c =>
-        c.status === 'on_chain' && c.traceCode
-      )
-      break
-  }
-
-  return chains.slice(0, 4)
-})
-
-// 获取产品显示名称
-const getProductName = (chain) => {
-  const processRecord = chain.records.find(r => r.action === 'process')
-  return processRecord?.data?.outputProduct || chain.productName
+const stageNameMap = {
+  0: 'producer', 1: 'processor', 2: 'inspector', 3: 'seller', 4: 'sold'
 }
 
-// 获取产品当前阶段
-const getStageLabel = (chain) => {
-  const stageMap = {
-    producer: '原料登记',
-    processor: '加工中',
-    inspector: '质检中',
-    seller: '销售中',
-    sold: '已售出'
-  }
-  return stageMap[chain.currentStage] || '处理中'
+const getProductName = (product) => product.name || '-'
+
+const getStageLabel = (product) => {
+  const stage = stageNameMap[product.current_stage] || product.current_stage
+  const map = { producer: '原料登记', processor: '加工中', inspector: '质检中', seller: '销售中', sold: '已售出' }
+  return map[stage] || '处理中'
 }
 
-// 获取阶段颜色
-const getStageColor = (stage) => {
-  const colorMap = {
-    producer: '#52c41a',
-    processor: '#1890ff',
-    inspector: '#722ed1',
-    seller: '#fa8c16',
-    sold: '#909399'
-  }
-  return colorMap[stage] || '#909399'
+const getStageColor = (product) => {
+  const stage = stageNameMap[product.current_stage] || product.current_stage
+  const map = { producer: '#52c41a', processor: '#1890ff', inspector: '#722ed1', seller: '#fa8c16', sold: '#909399' }
+  return map[stage] || '#909399'
 }
 
-// 获取产地
-const getOrigin = (chain) => {
-  return productStore.getMergedData(chain)?.origin || '-'
-}
-
-// 查看产品详情
-const viewProduct = (chain) => {
-  if (chain.traceCode) {
-    router.push(`/dashboard/trace/${chain.traceCode}`)
+const viewProduct = (product) => {
+  if (product.trace_code) {
+    router.push(`/trace/${product.trace_code}`)
   }
 }
 
@@ -314,7 +282,7 @@ const bottomCardInfo = computed(() => {
             </span>
           </div>
         </template>
-        <el-timeline>
+        <el-timeline v-if="activities.length > 0">
           <el-timeline-item
             v-for="(activity, index) in activities"
             :key="index"
@@ -325,68 +293,62 @@ const bottomCardInfo = computed(() => {
             {{ activity.content }}
           </el-timeline-item>
         </el-timeline>
+        <el-empty v-else description="暂无最近活动" :image-size="60" />
       </el-card>
 
-      <!-- 中间 - 溯源趋势 -->
       <el-card class="chart-card">
         <template #header>
           <div class="card-header">
             <span class="card-title">
               <el-icon><TrendCharts /></el-icon>
-              溯源查询趋势
+              数据概览
             </span>
-            <el-radio-group size="small">
-              <el-radio-button label="周" />
-              <el-radio-button label="月" />
-              <el-radio-button label="年" />
-            </el-radio-group>
           </div>
         </template>
-        <div class="chart-placeholder">
+        <div class="chart-area" v-if="currentStats.length > 0">
           <div class="chart-bars">
             <div
-              v-for="(value, index) in chartData.values"
+              v-for="(stat, index) in currentStats"
               :key="index"
-              class="chart-bar"
-              :style="{ height: (value / 400 * 100) + '%' }"
+              class="chart-bar-wrapper"
             >
-              <span class="bar-value">{{ value }}</span>
-              <span class="bar-label">{{ chartData.labels[index] }}</span>
+              <span class="bar-value">{{ stat.value }}{{ stat.suffix || '' }}</span>
+              <div
+                class="chart-bar"
+                :style="{
+                  height: Math.max((Number(stat.value) / chartMax) * 100, 8) + '%',
+                  background: `linear-gradient(to top, ${chartBarColors[index % chartBarColors.length]}, ${chartBarColors[index % chartBarColors.length]}cc)`
+                }"
+              ></div>
+              <span class="bar-label">{{ stat.label }}</span>
             </div>
           </div>
         </div>
+        <el-empty v-else description="暂无数据" :image-size="60" />
       </el-card>
 
-      <!-- 右侧 - 待办事项 -->
       <el-card class="todo-card">
         <template #header>
           <div class="card-header">
             <span class="card-title">
-              <el-icon><List /></el-icon>
-              待办事项
+              <el-icon><Promotion /></el-icon>
+              快捷操作
             </span>
           </div>
         </template>
-        <div class="todo-list">
+        <div class="quick-actions">
           <div
-            v-for="todo in todos"
-            :key="todo.id"
-            class="todo-item"
-            :class="{ done: todo.done }"
+            v-for="action in quickActions"
+            :key="action.path"
+            class="quick-action-item"
+            @click="router.push(action.path)"
           >
-            <el-checkbox v-model="todo.done" />
-            <span class="todo-text">{{ todo.title }}</span>
-            <el-tag
-              v-if="!todo.done"
-              :type="todo.priority === 'high' ? 'danger' : todo.priority === 'medium' ? 'warning' : 'info'"
-              size="small"
-              effect="plain"
-            >
-              {{ todo.priority === 'high' ? '紧急' : todo.priority === 'medium' ? '普通' : '低' }}
-            </el-tag>
+            <div class="action-icon">
+              <el-icon :size="24"><component :is="action.icon" /></el-icon>
+            </div>
+            <span class="action-label">{{ action.label }}</span>
           </div>
         </div>
-        <el-empty v-if="todos.length === 0" description="暂无待办事项" :image-size="60" />
       </el-card>
     </div>
 
@@ -402,24 +364,24 @@ const bottomCardInfo = computed(() => {
         </div>
       </template>
 
-      <div v-if="recentProducts.length > 0" class="products-grid">
+      <div v-if="recentOnChainProducts.length > 0" class="products-grid">
         <div
-          v-for="chain in recentProducts"
-          :key="chain.id"
+          v-for="product in recentOnChainProducts"
+          :key="product.trace_code"
           class="product-card"
-          @click="viewProduct(chain)"
+          @click="viewProduct(product)"
         >
-          <div class="product-avatar" :style="{ background: getStageColor(chain.currentStage) }">
+          <div class="product-avatar" :style="{ background: getStageColor(product) }">
             <el-icon :size="24"><GoodsFilled /></el-icon>
           </div>
           <div class="product-info">
-            <h4>{{ getProductName(chain) }}</h4>
-            <p class="product-origin">{{ getOrigin(chain) }}</p>
+            <h4>{{ getProductName(product) }}</h4>
+            <p class="product-origin">{{ product.origin || '-' }}</p>
             <div class="product-meta">
-              <el-tag size="small" :color="getStageColor(chain.currentStage)" effect="dark">
-                {{ getStageLabel(chain) }}
+              <el-tag size="small" :color="getStageColor(product)" effect="dark">
+                {{ getStageLabel(product) }}
               </el-tag>
-              <span v-if="chain.traceCode" class="trace-code">{{ chain.traceCode }}</span>
+              <span v-if="product.trace_code" class="trace-code">{{ product.trace_code }}</span>
             </div>
           </div>
           <el-icon class="arrow-icon"><ArrowRight /></el-icon>
@@ -629,87 +591,89 @@ const bottomCardInfo = computed(() => {
   color: var(--text-secondary);
 }
 
-/* 图表区域 */
-.chart-placeholder {
-  height: 220px;
-  display: flex;
-  align-items: flex-end;
-  padding: 20px 0;
+.chart-area {
+  padding: 16px 0 8px;
+  height: 200px;
 }
 
 .chart-bars {
   display: flex;
   justify-content: space-around;
   align-items: flex-end;
-  width: 100%;
   height: 100%;
+  gap: 12px;
+  padding: 0 8px;
 }
 
-.chart-bar {
-  width: 48px;
-  background: linear-gradient(to top, var(--primary-color), var(--primary-light));
-  border-radius: 8px 8px 0 0;
-  position: relative;
+.chart-bar-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
-  transition: all 0.3s ease;
-  min-height: 20px;
-}
-
-.chart-bar:hover {
-  transform: scaleY(1.05);
-  background: linear-gradient(to top, var(--primary-dark), var(--primary-color));
+  gap: 8px;
+  flex: 1;
+  height: 100%;
+  justify-content: flex-end;
 }
 
 .bar-value {
-  position: absolute;
-  top: -24px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.bar-label {
-  position: absolute;
-  bottom: -24px;
-  font-size: 12px;
-  color: var(--text-muted);
+.chart-bar {
+  width: 100%;
+  max-width: 48px;
+  min-height: 8px;
+  border-radius: 6px 6px 2px 2px;
+  transition: height 0.6s ease;
 }
 
-/* 待办事项 */
-.todo-list {
+.bar-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.quick-actions {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.todo-item {
+.quick-action-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px;
+  gap: 14px;
+  cursor: pointer;
+  padding: 14px 16px;
+  border-radius: 12px;
   background: var(--bg-color);
-  border-radius: 10px;
-  transition: all 0.2s ease;
+  transition: all 0.3s ease;
 }
 
-.todo-item:hover {
-  background: #f0f2f5;
+.quick-action-item:hover {
+  background: #e8f5e9;
+  transform: translateX(4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 
-.todo-item.done {
-  opacity: 0.6;
+.action-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--primary-color), var(--primary-light, #67d17e));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  flex-shrink: 0;
 }
 
-.todo-item.done .todo-text {
-  text-decoration: line-through;
-  color: var(--text-muted);
-}
-
-.todo-text {
-  flex: 1;
+.action-label {
   font-size: 14px;
+  font-weight: 500;
   color: var(--text-primary);
 }
 

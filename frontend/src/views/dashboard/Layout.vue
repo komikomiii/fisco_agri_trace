@@ -16,10 +16,7 @@ const notificationStore = useNotificationStore()
 const isCollapse = ref(false)
 const activeMenu = computed(() => route.path)
 
-// 初始化数据
 onMounted(() => {
-  productStore.initMockData()
-  notificationStore.initMockData(userStore.user?.role)
 })
 
 // 根据角色获取菜单

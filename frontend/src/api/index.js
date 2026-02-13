@@ -5,7 +5,7 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
 const api = axios.create({
-  baseURL: 'http://localhost:8000/api',
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
   timeout: 60000,  // 增加到 60 秒，区块链操作可能需要较长时间
   headers: {
     'Content-Type': 'application/json'

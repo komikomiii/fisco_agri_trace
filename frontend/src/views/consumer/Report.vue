@@ -1,55 +1,88 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useProductStore } from '../../store/product'
+import { blockchainApi } from '../../api/blockchain'
+import { aiApi } from '../../api/ai'
 import TraceCode from '../../components/common/TraceCode.vue'
 
 const route = useRoute()
 const router = useRouter()
-const productStore = useProductStore()
 
 const loading = ref(true)
 const generating = ref(false)
 const chain = ref(null)
+const aiSummary = ref('')
 
-// 获取溯源码
 const traceCode = computed(() => route.params.code)
 
-// 加载产品链数据
-onMounted(async () => {
-  // 模拟加载延迟
-  await new Promise(resolve => setTimeout(resolve, 500))
+const actionMap = {
+  0: 'create', 1: 'harvest', 2: 'receive', 3: 'process',
+  4: 'send_inspect', 5: 'start_inspect', 6: 'inspect',
+  7: 'reject', 8: 'terminate', 9: 'stock_in', 10: 'sell', 11: 'amend'
+}
 
-  chain.value = productStore.productChains.find(c => c.traceCode === traceCode.value)
+const stageMap = {
+  0: 'producer', 1: 'processor', 2: 'inspector', 3: 'seller', 4: 'sold'
+}
 
-  if (chain.value) {
-    // 模拟AI生成简报
-    generating.value = true
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    generating.value = false
+const parseRecord = (r) => {
+  let parsedData = {}
+  if (r.data) {
+    try { parsedData = typeof r.data === 'string' ? JSON.parse(r.data) : r.data } catch { parsedData = {} }
   }
+  return {
+    action: typeof r.action === 'number' ? (actionMap[r.action] || r.action) : r.action,
+    stage: typeof r.stage === 'number' ? (stageMap[r.stage] || r.stage) : r.stage,
+    data: parsedData,
+    operator: { name: r.operatorName || '-' },
+    timestamp: r.timestamp ? new Date(r.timestamp * 1000).toISOString() : null,
+    txHash: r.txHash || null,
+    blockNumber: r.blockNumber || null
+  }
+}
 
-  loading.value = false
+onMounted(async () => {
+  try {
+    const response = await blockchainApi.getProductChainData(traceCode.value)
+    if (response && response.exists) {
+      const info = response.product_info || {}
+      chain.value = {
+        productName: info.name || '',
+        category: info.category || '',
+        traceCode: traceCode.value,
+        records: (response.chain_records || []).map(parseRecord)
+      }
+      generating.value = true
+      try {
+        const aiResult = await aiApi.generateSummary(traceCode.value, response)
+        if (aiResult?.summary) aiSummary.value = aiResult.summary
+      } catch (e) {
+        console.error('AI 简报生成失败:', e)
+      }
+      generating.value = false
+    }
+  } catch (e) {
+    console.error('获取溯源数据失败:', e)
+  } finally {
+    loading.value = false
+  }
 })
 
-// 获取产品名称
 const productName = computed(() => {
   if (!chain.value) return ''
   const processRecord = chain.value.records.find(r => r.action === 'process')
-  return processRecord?.data?.outputProduct || chain.value.productName
+  return processRecord?.data?.result_product || processRecord?.data?.outputProduct || chain.value.productName
 })
 
-// 获取原材料
 const rawMaterial = computed(() => {
   return chain.value?.productName || ''
 })
 
-// 获取产地
 const origin = computed(() => {
-  return productStore.getMergedData(chain.value)?.origin || '-'
+  const createRecord = chain.value?.records.find(r => r.action === 'create')
+  return createRecord?.data?.origin || '-'
 })
 
-// 获取生产日期
 const productionDate = computed(() => {
   const processRecord = chain.value?.records.find(r => r.action === 'process')
   if (processRecord?.timestamp) {
@@ -106,8 +139,8 @@ const highlights = computed(() => {
     items.push('通过专业质检机构检测，品质有保障')
   }
 
-  const mergedData = productStore.getMergedData(chain.value)
-  if (mergedData?.plantDate) {
+  const createData = chain.value.records.find(r => r.action === 'create')?.data
+  if (createData?.plantDate || createData?.harvest_date) {
     items.push('采用科学种植管理，全程可追溯')
   }
 
@@ -209,7 +242,7 @@ const formatTime = (timestamp) => {
 
 // 查看完整链上记录
 const viewFullTrace = () => {
-  router.push(`/dashboard/trace/${traceCode.value}`)
+  router.push(`/trace/${traceCode.value}`)
 }
 
 // 返回扫码页

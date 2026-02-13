@@ -1,15 +1,88 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { blockchainApi } from '../../api/blockchain'
+import { Html5Qrcode } from 'html5-qrcode'
 
 const router = useRouter()
 const traceCode = ref('')
 const showCamera = ref(false)
-const showUpload = ref(false)
 const searching = ref(false)
-const ocrProcessing = ref(false)
+
+let html5QrCode = null
+const scannerReady = ref(false)
+
+const startScanner = async () => {
+  await nextTick()
+  const container = document.getElementById('qr-reader')
+  if (!container) return
+  try {
+    html5QrCode = new Html5Qrcode('qr-reader')
+    scannerReady.value = true
+    await html5QrCode.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      (decodedText) => {
+        stopScanner()
+        showCamera.value = false
+        const code = decodedText.includes('trace/') ? decodedText.split('trace/').pop() : decodedText
+        traceCode.value = code.trim()
+        handleSearch()
+      },
+      () => {}
+    )
+  } catch (err) {
+    console.error('摄像头启动失败:', err)
+    ElMessage.error('无法访问摄像头，请检查权限或使用手动输入')
+    scannerReady.value = false
+  }
+}
+
+const stopScanner = async () => {
+  if (html5QrCode) {
+    try {
+      const state = html5QrCode.getState()
+      if (state === 2) await html5QrCode.stop()
+    } catch {}
+    html5QrCode = null
+    scannerReady.value = false
+  }
+}
+
+watch(showCamera, async (val) => {
+  if (val) {
+    await startScanner()
+  } else {
+    await stopScanner()
+  }
+})
+
+onBeforeUnmount(() => {
+  stopScanner()
+})
+
+const imageFileRef = ref(null)
+const scanningImage = ref(false)
+
+const handleImageScan = async (uploadFile) => {
+  const file = uploadFile.raw || uploadFile
+  if (!file) return
+  scanningImage.value = true
+  try {
+    const qr = new Html5Qrcode('qr-image-scan-tmp')
+    const result = await qr.scanFile(file, false)
+    await qr.clear()
+    const code = result.includes('trace/') ? result.split('trace/').pop() : result
+    traceCode.value = code.trim()
+    ElMessage.success('识别成功')
+    handleSearch()
+  } catch {
+    ElMessage.error('未能从图片中识别出二维码，请确认图片包含有效二维码')
+  } finally {
+    scanningImage.value = false
+  }
+}
 
 // 已上架产品列表（从真实 API 获取）
 const onChainProducts = ref([])
@@ -141,65 +214,9 @@ const quickTrace = (code) => {
 
 // 查看完整链上记录
 const viewFullTrace = (code) => {
-  router.push(`/dashboard/trace/${code}`)
+  router.push(`/trace/${code}`)
 }
 
-// ==================== 图片OCR识别 ====================
-const uploadRef = ref(null)
-const uploadedImage = ref(null)
-const recognizedCode = ref('')
-
-const openUploadDialog = () => {
-  uploadedImage.value = null
-  recognizedCode.value = ''
-  showUpload.value = true
-}
-
-// 处理图片上传
-const handleImageUpload = (file) => {
-  const reader = new FileReader()
-  reader.onload = (e) => {
-    uploadedImage.value = e.target.result
-  }
-  reader.readAsDataURL(file.raw)
-  return false // 阻止自动上传
-}
-
-// 模拟OCR识别
-const performOCR = async () => {
-  if (!uploadedImage.value) {
-    ElMessage.warning('请先上传图片')
-    return
-  }
-
-  ocrProcessing.value = true
-
-  // 模拟OCR处理延迟
-  await new Promise(resolve => setTimeout(resolve, 1500))
-
-  // 模拟识别结果 - 实际项目中接入OCR API
-  // 这里随机返回一个存在的溯源码
-  const existingCodes = onChainProducts.value.map(p => p.trace_code)
-
-  if (existingCodes.length > 0) {
-    recognizedCode.value = existingCodes[Math.floor(Math.random() * existingCodes.length)]
-    ElMessage.success('识别成功！')
-  } else {
-    recognizedCode.value = ''
-    ElMessage.warning('未能识别出溯源码，请手动输入')
-  }
-
-  ocrProcessing.value = false
-}
-
-// 使用识别结果查询
-const useRecognizedCode = () => {
-  if (recognizedCode.value) {
-    showUpload.value = false
-    // 跳转到公共溯源页面
-    router.push(`/trace/${recognizedCode.value}`)
-  }
-}
 </script>
 
 <template>
@@ -217,12 +234,21 @@ const useRecognizedCode = () => {
       <div class="scan-actions">
         <div class="action-buttons">
           <el-button type="primary" size="large" :icon="Camera" @click="showCamera = true">
-            扫描二维码
+            摄像头扫码
           </el-button>
-          <el-button size="large" :icon="Picture" @click="openUploadDialog">
-            上传图片识别
-          </el-button>
+          <el-upload
+            ref="imageFileRef"
+            :show-file-list="false"
+            :auto-upload="false"
+            accept="image/*"
+            :on-change="handleImageScan"
+          >
+            <el-button size="large" :icon="Picture" :loading="scanningImage">
+              图片识别
+            </el-button>
+          </el-upload>
         </div>
+        <div id="qr-image-scan-tmp" style="display:none"></div>
 
         <div class="divider">
           <span>或手动输入溯源码</span>
@@ -324,78 +350,17 @@ const useRecognizedCode = () => {
       </div>
     </el-card>
 
-    <!-- 模拟摄像头 -->
-    <el-dialog v-model="showCamera" title="扫描二维码" width="400px">
-      <div class="camera-placeholder">
-        <div class="scan-frame">
-          <div class="corner top-left"></div>
-          <div class="corner top-right"></div>
-          <div class="corner bottom-left"></div>
-          <div class="corner bottom-right"></div>
-          <div class="scan-line"></div>
-        </div>
-        <p>请将二维码对准扫描框</p>
-        <p class="camera-tip">（演示环境，实际项目中接入摄像头API）</p>
+    <el-dialog v-model="showCamera" title="扫描二维码" width="500px" :destroy-on-close="true" @closed="stopScanner">
+      <div class="camera-container">
+        <div id="qr-reader" class="qr-reader"></div>
+        <p v-if="!scannerReady" class="camera-tip">正在启动摄像头...</p>
+        <p v-else class="camera-tip">请将二维码对准扫描框</p>
       </div>
       <template #footer>
-        <el-button @click="showCamera = false">取消</el-button>
+        <el-button @click="showCamera = false">关闭</el-button>
       </template>
     </el-dialog>
 
-    <!-- 图片上传识别 -->
-    <el-dialog v-model="showUpload" title="上传图片识别溯源码" width="500px">
-      <div class="upload-container">
-        <el-upload
-          ref="uploadRef"
-          class="image-uploader"
-          :show-file-list="false"
-          :auto-upload="false"
-          accept="image/*"
-          :on-change="handleImageUpload"
-        >
-          <div v-if="uploadedImage" class="uploaded-preview">
-            <img :src="uploadedImage" alt="预览" />
-            <div class="preview-overlay">
-              <el-icon :size="24"><RefreshRight /></el-icon>
-              <span>点击更换图片</span>
-            </div>
-          </div>
-          <div v-else class="upload-placeholder">
-            <el-icon :size="48"><Upload /></el-icon>
-            <p>点击或拖拽上传图片</p>
-            <span>支持 JPG、PNG 格式</span>
-          </div>
-        </el-upload>
-
-        <div v-if="uploadedImage" class="ocr-actions">
-          <el-button
-            type="primary"
-            :loading="ocrProcessing"
-            @click="performOCR"
-          >
-            <el-icon v-if="!ocrProcessing"><View /></el-icon>
-            {{ ocrProcessing ? '识别中...' : '开始识别' }}
-          </el-button>
-        </div>
-
-        <div v-if="recognizedCode" class="ocr-result">
-          <div class="result-header">
-            <el-icon class="success-icon"><CircleCheck /></el-icon>
-            <span>识别成功</span>
-          </div>
-          <div class="result-code">
-            <span class="label">溯源码：</span>
-            <span class="code">{{ recognizedCode }}</span>
-          </div>
-          <el-button type="primary" @click="useRecognizedCode">
-            查询该产品
-          </el-button>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="showUpload = false">取消</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -614,179 +579,21 @@ const useRecognizedCode = () => {
   color: var(--text-muted);
 }
 
-/* 摄像头占位 */
-.camera-placeholder {
-  height: 300px;
-  background: #1a1a1a;
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  position: relative;
+.camera-container {
+  text-align: center;
 }
 
-.camera-placeholder p {
-  color: rgba(255, 255, 255, 0.6);
-  margin-top: 20px;
+.qr-reader {
+  width: 100%;
+  min-height: 300px;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .camera-tip {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.4) !important;
-}
-
-.scan-frame {
-  width: 200px;
-  height: 200px;
-  position: relative;
-}
-
-.corner {
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  border: 3px solid var(--primary-color);
-}
-
-.top-left { top: 0; left: 0; border-right: none; border-bottom: none; }
-.top-right { top: 0; right: 0; border-left: none; border-bottom: none; }
-.bottom-left { bottom: 0; left: 0; border-right: none; border-top: none; }
-.bottom-right { bottom: 0; right: 0; border-left: none; border-top: none; }
-
-.scan-line {
-  position: absolute;
-  left: 10%;
-  width: 80%;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--primary-color), transparent);
-  animation: scan 2s linear infinite;
-}
-
-@keyframes scan {
-  0% { top: 10%; }
-  50% { top: 90%; }
-  100% { top: 10%; }
-}
-
-/* 图片上传 */
-.upload-container {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-}
-
-.image-uploader {
-  width: 100%;
-}
-
-.image-uploader :deep(.el-upload) {
-  width: 100%;
-}
-
-.upload-placeholder {
-  width: 100%;
-  height: 200px;
-  border: 2px dashed var(--border-color);
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  cursor: pointer;
-  transition: all 0.3s;
-}
-
-.upload-placeholder:hover {
-  border-color: var(--primary-color);
-  background: rgba(82, 196, 26, 0.05);
-}
-
-.upload-placeholder p {
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.upload-placeholder span {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
+  margin-top: 12px;
 }
 
-.uploaded-preview {
-  width: 100%;
-  height: 200px;
-  border-radius: 12px;
-  overflow: hidden;
-  position: relative;
-  cursor: pointer;
-}
-
-.uploaded-preview img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.preview-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: white;
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-
-.uploaded-preview:hover .preview-overlay {
-  opacity: 1;
-}
-
-.ocr-actions {
-  display: flex;
-  gap: 12px;
-}
-
-.ocr-result {
-  width: 100%;
-  padding: 20px;
-  background: #f6ffed;
-  border: 1px solid #b7eb8f;
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-}
-
-.result-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #389e0d;
-  font-weight: 600;
-}
-
-.success-icon {
-  font-size: 20px;
-}
-
-.result-code {
-  font-size: 16px;
-}
-
-.result-code .label {
-  color: var(--text-secondary);
-}
-
-.result-code .code {
-  font-family: monospace;
-  font-weight: 600;
-  color: var(--primary-color);
-}
 </style>
