@@ -96,7 +96,7 @@ if pgrep -f "webase.front" > /dev/null; then
 else
     cd "$WEBASE_DIR"
     bash start.sh 2>/dev/null
-    sleep 5
+    sleep 15
     if pgrep -f "webase.front" > /dev/null; then
         echo -e "${GREEN}  ✓ WeBASE-Front 启动成功 (http://localhost:5002/WeBASE-Front)${NC}"
     else
@@ -143,6 +143,6 @@ echo ""
 echo -e "  ${YELLOW}[应用服务]${NC}"
 echo "    FastAPI 后端       :8000     $(ss -tlnp 2>/dev/null | grep -q ':8000 ' && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
 echo "    Vue 前端           :5173     $(ss -tlnp 2>/dev/null | grep -q ':5173 ' && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
-echo "    WeBASE-Front       :5002     $(ss -tlnp 2>/dev/null | grep -q ':5002 ' && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
+echo "    WeBASE-Front       :5002     $(pgrep -f 'webase.front' > /dev/null && echo -e "${GREEN}✓${NC}" || echo -e "${RED}✗${NC}")"
 echo ""
 echo "=========================================="

@@ -10,6 +10,23 @@ const traceCode = ref('')
 const showCamera = ref(false)
 const searching = ref(false)
 
+const isValidTraceCode = (code) => {
+  if (!code) return false
+  return /^TRACE-\d{8}-\w+$/i.test(code)
+}
+
+const extractTraceCode = (text) => {
+  if (!text) return null
+  if (text.includes('trace/')) {
+    const extracted = text.split('trace/').pop().split('?')[0].trim()
+    if (isValidTraceCode(extracted)) return extracted
+  }
+  const match = text.match(/TRACE-\d{8}-\w+/i)
+  if (match) return match[0]
+  if (isValidTraceCode(text.trim())) return text.trim()
+  return null
+}
+
 let html5QrCode = null
 const scannerReady = ref(false)
 
@@ -26,9 +43,17 @@ const startScanner = async () => {
       (decodedText) => {
         stopScanner()
         showCamera.value = false
-        const code = decodedText.includes('trace/') ? decodedText.split('trace/').pop() : decodedText
-        traceCode.value = code.trim()
-        handleSearch()
+        const code = extractTraceCode(decodedText)
+        if (code) {
+          traceCode.value = code
+          handleSearch()
+        } else {
+          traceCode.value = ''
+          ElMessage.warning({
+            message: '该二维码不是本平台的溯源码，请扫描产品包装上的溯源二维码',
+            duration: 4000
+          })
+        }
       },
       () => {}
     )
@@ -73,10 +98,18 @@ const handleImageScan = async (uploadFile) => {
     const qr = new Html5Qrcode('qr-image-scan-tmp')
     const result = await qr.scanFile(file, false)
     await qr.clear()
-    const code = result.includes('trace/') ? result.split('trace/').pop() : result
-    traceCode.value = code.trim()
-    ElMessage.success('识别成功')
-    handleSearch()
+    const code = extractTraceCode(result)
+    if (code) {
+      traceCode.value = code
+      ElMessage.success('识别成功')
+      handleSearch()
+    } else {
+      traceCode.value = ''
+      ElMessage.warning({
+        message: '该二维码不是本平台的溯源码，请上传产品包装上的溯源二维码图片',
+        duration: 4000
+      })
+    }
   } catch {
     ElMessage.error('未能从图片中识别出二维码，请确认图片包含有效二维码')
   } finally {
@@ -149,16 +182,26 @@ const formatTime = (timestamp) => {
 
 // 搜索溯源 - 调用真实 API
 const handleSearch = async () => {
-  if (!traceCode.value.trim()) {
+  const input = traceCode.value.trim()
+  if (!input) {
     ElMessage.warning('请输入溯源码')
     return
   }
 
+  const code = extractTraceCode(input) || input
+  if (!isValidTraceCode(code)) {
+    ElMessage.warning({
+      message: '溯源码格式不正确，正确格式如：TRACE-20241226-001',
+      duration: 4000
+    })
+    return
+  }
+
+  traceCode.value = code
   searching.value = true
 
   try {
-    // 调用区块链 API 验证溯源码
-    const response = await blockchainApi.getProductChainData(traceCode.value.trim())
+    const response = await blockchainApi.getProductChainData(code)
 
     if (response && response.exists) {
       // 保存到历史记录
