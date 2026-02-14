@@ -7,17 +7,11 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import json
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
-
-# 区块链操作线程池（避免阻塞事件循环）
-blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/seller", tags=["销售商"])
 

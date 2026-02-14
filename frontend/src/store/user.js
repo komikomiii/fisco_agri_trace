@@ -32,7 +32,8 @@ export const useUserStore = defineStore('user', () => {
       localStorage.setItem('user', JSON.stringify(userData))
       return userData
     } catch (error) {
-      throw new Error(error.response?.data?.detail || '登录失败')
+      const detail = error.response?.data?.detail
+      throw new Error(Array.isArray(detail) ? detail.map(d => d.msg || d).join('; ') : detail || '登录失败')
     }
   }
 
@@ -48,7 +49,8 @@ export const useUserStore = defineStore('user', () => {
       })
       return response
     } catch (error) {
-      throw new Error(error.response?.data?.detail || '注册失败')
+      const detail = error.response?.data?.detail
+      throw new Error(Array.isArray(detail) ? detail.map(d => d.msg || d).join('; ') : detail || '注册失败')
     }
   }
 

@@ -7,17 +7,11 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import json
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
-
-# 区块链操作线程池（避免阻塞事件循环）
-blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/inspector", tags=["质检员"])
 
@@ -328,9 +322,9 @@ def background_inspect_product(product_id: int, user_id: int, operator_name: str
         # 2. 根据结果处理转移或作废
         if inspect_data_dict['qualified']:
             seller = db.query(User).filter(User.role == UserRole.SELLER).first()
-            if seller:
+            if seller and seller.blockchain_address:
                 t_success, t_tx, t_bn = blockchain_client.transfer_product(
-                    trace_code=product.trace_code, new_holder=seller.blockchain_address or seller.username,
+                    trace_code=product.trace_code, new_holder=seller.blockchain_address,
                     new_stage="seller", data=json.dumps({"action":"inspect_pass"}),
                     remark="质检合格转移", operator_name=operator_name
                 )
@@ -344,13 +338,26 @@ def background_inspect_product(product_id: int, user_id: int, operator_name: str
             product.invalidated_by = user_id
             product.invalidated_reason = inspect_data_dict['reject_reason']
         else:
-            # 退回逻辑 (简化处理，默认退回原阶段)
             target_stage = ProductStage.PROCESSOR if inspect_data_dict['reject_to_stage'] == "processor" else ProductStage.PRODUCER
-            # ... 查找持有者并转移 ... (此处省略详细查找逻辑，保持核心流程)
+            if target_stage == ProductStage.PROCESSOR:
+                target_user = db.query(User).filter(User.id == product.assigned_processor_id).first() if product.assigned_processor_id else db.query(User).filter(User.role == UserRole.PROCESSOR).first()
+            else:
+                target_user = db.query(User).filter(User.id == product.creator_id).first()
+            if target_user and target_user.blockchain_address:
+                t_success, t_tx, t_bn = blockchain_client.transfer_product(
+                    trace_code=product.trace_code, new_holder=target_user.blockchain_address,
+                    new_stage=target_stage.value if hasattr(target_stage, 'value') else str(target_stage),
+                    data=json.dumps({"action": "reject", "reason": inspect_data_dict.get('reject_reason', '')}),
+                    remark=f"质检退回至{inspect_data_dict['reject_to_stage']}", operator_name=operator_name
+                )
+                if t_success:
+                    final_tx, final_bn = t_tx, t_bn
+                product.current_holder_id = target_user.id
             product.current_stage = target_stage
 
         product.tx_hash, product.block_number = final_tx, final_bn
-        product.status = ProductStatus.ON_CHAIN
+        if product.status != ProductStatus.INVALIDATED:
+            product.status = ProductStatus.ON_CHAIN
         product.updated_at = datetime.now()
         db.add(ProductRecord(
             product_id=product.id, stage=ProductStage.INSPECTOR, action=RecordAction.INSPECT,

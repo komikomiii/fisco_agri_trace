@@ -8,17 +8,11 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 import json
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
 from app.database import get_db
 from app.models.user import User, UserRole
 from app.models.product import Product, ProductRecord, ProductStatus, ProductStage, RecordAction
 from app.api.auth import get_current_user
 from app.blockchain import blockchain_client
-
-# 区块链操作线程池（避免阻塞事件循环）
-blockchain_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="blockchain_")
 
 router = APIRouter(prefix="/processor", tags=["加工商"])
 
@@ -329,10 +323,10 @@ def background_send_inspect(product_id: int, user_id: int, operator_name: str, d
             data=json.dumps(send_data), remark="送检: 质量检测", operator_name=operator_name
         )
 
-        if s_success:
+        if s_success and inspector.blockchain_address:
             t_success, t_tx, t_bn = blockchain_client.transfer_product(
                 trace_code=product.trace_code, 
-                new_holder=inspector.blockchain_address or inspector.username,
+                new_holder=inspector.blockchain_address,
                 new_stage="inspector", data=json.dumps({"action": "send_inspect"}),
                 remark="加工商送检", operator_name=operator_name
             )
