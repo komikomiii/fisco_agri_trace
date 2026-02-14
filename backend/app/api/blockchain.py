@@ -292,6 +292,21 @@ async def get_product_chain_data(trace_code: str):
         # 尝试使用 RPC 获取记录
         records = blockchain_client.get_product_records_rpc(trace_code)
 
+        # RPC 记录补充 tx_hash（链上合约不存储 tx_hash，从数据库获取）
+        if records:
+            product_db = db.query(Product).filter(Product.trace_code == trace_code).first()
+            if product_db:
+                db_records = db.query(ProductRecord).filter(
+                    ProductRecord.product_id == product_db.id
+                ).order_by(ProductRecord.created_at.asc()).all()
+                tx_map = {r.id: (r.tx_hash, r.block_number) for r in db_records}
+                for rec in records:
+                    rid = rec.get("recordId")
+                    if rid and rid in tx_map:
+                        tx, bn = tx_map[rid]
+                        if tx: rec["txHash"] = tx
+                        if bn: rec["blockNumber"] = bn
+
         # 如果 RPC 失败，从数据库获取
         if not records:
             product = db.query(Product).filter(Product.trace_code == trace_code).first()
@@ -317,7 +332,9 @@ async def get_product_chain_data(trace_code: str):
                         "operatorName": record.operator_name or "",
                         "timestamp": int(record.created_at.timestamp()),
                         "previousRecordId": record.previous_record_id or 0,
-                        "amendReason": record.amend_reason or ""
+                        "amendReason": record.amend_reason or "",
+                        "txHash": record.tx_hash or "",
+                        "blockNumber": record.block_number
                     })
 
         return {

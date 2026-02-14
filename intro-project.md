@@ -106,7 +106,7 @@ FISCO BCOS 3.0 使用字符串命名群组（如 `group0`），支持在同一�
 komi-project/
 ├── README.md                          # 项目主文档
 ├── intro-project.md                   # 本文件，项目结构说明
-├── start.sh                           # 一键启动脚本（MySQL → FISCO BCOS → 后端 → 前端）
+├── start.sh                           # 一键启动脚本（MySQL → FISCO BCOS → 后端 → 前端 → WeBASE-Front），末尾展示端口占用状态
 ├── .gitignore                         # Git 忽略规则
 │
 ├── frontend/                          # ===== 前端项目（Vue 3 + Vite）=====

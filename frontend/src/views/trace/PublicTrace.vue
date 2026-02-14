@@ -338,7 +338,8 @@ const timelineData = computed(() => {
       remark: translateRemark(record.remark) || '',
       dataDetails: dataDetails,
       isAmend: actionKey === 'amend' || actionKey === 5,
-      txHash: txHash
+      txHash: txHash,
+      blockNumber: record.blockNumber ?? null
     }
   })
 })
@@ -695,6 +696,10 @@ const unwatch = router.afterEach((to) => {
                           <div class="chain-info-item" v-if="record.txHash">
                             <span class="chain-label">交易哈希</span>
                             <span class="chain-value mono">{{ record.txHash }}</span>
+                          </div>
+                          <div class="chain-info-item" v-if="record.blockNumber">
+                            <span class="chain-label">区块高度</span>
+                            <span class="chain-value mono">{{ record.blockNumber }}</span>
                           </div>
                           <div class="chain-info-item">
                             <span class="chain-label">记录ID</span>
