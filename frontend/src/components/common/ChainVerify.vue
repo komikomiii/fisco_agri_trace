@@ -144,6 +144,7 @@ const verifyOnChain = async () => {
       verifyResult.value = simpleData
     } catch {
       verifyResult.value = null
+      ElMessage.error('链上数据获取失败，请检查网络')
     }
   } finally {
     loading.value = false

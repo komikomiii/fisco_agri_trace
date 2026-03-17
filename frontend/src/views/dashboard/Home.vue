@@ -64,6 +64,7 @@ const fetchStats = async () => {
     }
   } catch {
     currentStats.value = []
+    ElMessage.warning('数据加载失败，请稍后刷新')
   }
 }
 
@@ -75,6 +76,7 @@ const fetchRecentProducts = async () => {
     recentOnChainProducts.value = products || []
   } catch {
     recentOnChainProducts.value = []
+    ElMessage.warning('产品列表加载失败，请稍后刷新')
   }
 }
 
@@ -124,6 +126,7 @@ const fetchActivities = async () => {
     })
   } catch {
     activities.value = []
+    ElMessage.warning('动态加载失败，请稍后刷新')
   }
 }
 
