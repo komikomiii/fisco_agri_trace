@@ -6,7 +6,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from app.config import settings
 
-# SQLite 需要特殊配置
+# 如果用SQLite 需要特殊配置
 connect_args = {"check_same_thread": False} if settings.USE_SQLITE else {}
 
 engine = create_engine(

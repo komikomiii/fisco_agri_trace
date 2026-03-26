@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 为现有用户生成区块链地址
+扫库里的用户，给还没有 blockchain_address 的补生成钱包并写回数据库（相当于数据修复/批量补全）
 """
 import sys
 sys.path.insert(0, '/home/pdm/DEV/komi-project/backend')

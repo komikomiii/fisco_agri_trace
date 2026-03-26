@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 为所有用户生成 Console 兼容的账户文件
+给所有用户确保有钱包，并在 FISCO Console 的 ecdsa 目录下生成/对齐 PEM，方便 Console 写链
 """
 import sys
 sys.path.insert(0, '/home/pdm/DEV/komi-project/backend')
